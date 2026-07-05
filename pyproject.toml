@@ -7,6 +7,9 @@ dependencies = ["openai>=1.0", "bleak>=0.21", "PyYAML>=6.0"]
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
+[project.scripts]
+switchbot-schedule = "switchbot_scheduler.cli:main"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
