@@ -21,6 +21,26 @@ def test_encode_all_days_mask():
     assert a["action"] == 0  # press=0
 
 
+def test_encode_inverted_on_becomes_off():
+    a = encode_alarm(Event("06:00", "on", ["sun"]), inverted=True)
+    assert a["action"] == 2  # on -> off when inverted
+
+
+def test_encode_inverted_off_becomes_on():
+    a = encode_alarm(Event("06:00", "off", ["sun"]), inverted=True)
+    assert a["action"] == 1  # off -> on when inverted
+
+
+def test_encode_inverted_press_unaffected():
+    a = encode_alarm(Event("06:00", "press", ["sun"]), inverted=True)
+    assert a["action"] == 0  # press stays press
+
+
+def test_encode_not_inverted_on_stays_on():
+    a = encode_alarm(Event("06:00", "on", ["sun"]), inverted=False)
+    assert a["action"] == 1
+
+
 def test_build_alarm_frames_one_per_alarm_with_index_and_count():
     alarms = [
         {"repeat_byte": 0b1111111, "hour": 6, "minute": 0, "action": 1},

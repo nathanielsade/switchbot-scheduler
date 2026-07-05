@@ -44,5 +44,5 @@ def write_schedule(schedule: Schedule, registry: Registry) -> None:
         ble_id = registry.ble_id(device)
         if not ble_id:
             raise ValueError(f"No ble_id for '{device}'. Fill devices.yaml from the spike.")
-        alarms = [encode_alarm(e) for e in events]
+        alarms = [encode_alarm(e, inverted=registry.is_inverted(device)) for e in events]
         asyncio.run(write_alarms(ble_id, alarms))

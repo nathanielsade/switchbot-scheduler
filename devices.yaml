@@ -2,6 +2,7 @@ devices:
   living_room:
     aliases: ["living room", "סלון", "salon"]
     ble_id: ""   # CoreBluetooth UUID from spikes/FINDINGS.md
+    inverted: true  # mounted upside down; on/off physically swapped
   dining:
     aliases: ["dining", "פינת אוכל", "dining nook"]
     ble_id: ""

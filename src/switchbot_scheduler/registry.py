@@ -7,6 +7,7 @@ class Device:
     name: str
     aliases: list[str]
     ble_id: str
+    inverted: bool = False
 
 
 class Registry:
@@ -24,7 +25,12 @@ class Registry:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         devices = [
-            Device(name=name, aliases=cfg.get("aliases", []), ble_id=cfg.get("ble_id", ""))
+            Device(
+                name=name,
+                aliases=cfg.get("aliases", []),
+                ble_id=cfg.get("ble_id", ""),
+                inverted=cfg.get("inverted", False),
+            )
             for name, cfg in data["devices"].items()
         ]
         return cls(devices)
@@ -37,3 +43,6 @@ class Registry:
 
     def ble_id(self, name: str) -> str:
         return self._by_name[name].ble_id
+
+    def is_inverted(self, name: str) -> bool:
+        return self._by_name[name].inverted

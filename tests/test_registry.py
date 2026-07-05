@@ -38,3 +38,20 @@ def test_load_from_yaml(tmp_path):
     r = Registry.load(str(p))
     assert r.resolve("salon") == "living_room"
     assert r.ble_id("living_room") == "UUID-X"
+
+
+def test_load_inverted_flag_from_yaml(tmp_path):
+    p = tmp_path / "devices.yaml"
+    p.write_text(
+        "devices:\n"
+        "  living_room:\n"
+        "    aliases: []\n"
+        "    ble_id: \"UUID-X\"\n"
+        "    inverted: true\n"
+        "  dining:\n"
+        "    aliases: []\n"
+        "    ble_id: \"UUID-Y\"\n"
+    )
+    r = Registry.load(str(p))
+    assert r.is_inverted("living_room") is True
+    assert r.is_inverted("dining") is False
