@@ -32,10 +32,17 @@ async def write_alarms(ble_id: str, alarms: list[dict]) -> None:
             await client.write_gatt_char(WRITE_CHAR, frame, response=True)
 
 
-def write_schedule(schedule: Schedule, registry: Registry) -> None:
+def group_events_by_device(schedule: Schedule) -> dict:
+    grouped: dict = {}
     for ds in schedule.schedules:
-        ble_id = registry.ble_id(ds.device)
+        grouped.setdefault(ds.device, []).extend(ds.events)
+    return grouped
+
+
+def write_schedule(schedule: Schedule, registry: Registry) -> None:
+    for device, events in group_events_by_device(schedule).items():
+        ble_id = registry.ble_id(device)
         if not ble_id:
-            raise ValueError(f"No ble_id for '{ds.device}'. Fill devices.yaml from the spike.")
-        alarms = [encode_alarm(e) for e in ds.events]
+            raise ValueError(f"No ble_id for '{device}'. Fill devices.yaml from the spike.")
+        alarms = [encode_alarm(e) for e in events]
         asyncio.run(write_alarms(ble_id, alarms))

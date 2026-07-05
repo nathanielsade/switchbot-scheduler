@@ -10,16 +10,13 @@ class ScheduleError(ValueError):
 
 def validate(schedule: Schedule, registry: Registry) -> None:
     known = registry.known_names()
+    counts: dict[str, int] = {}
     for ds in schedule.schedules:
         if ds.device not in known:
             raise ScheduleError(
                 f"Unknown device '{ds.device}'. Known devices: {known}"
             )
-        if len(ds.events) > MAX_ALARMS:
-            raise ScheduleError(
-                f"{ds.device} needs {len(ds.events)} alarms, but max is {MAX_ALARMS}. "
-                f"Simplify the schedule."
-            )
+        counts[ds.device] = counts.get(ds.device, 0) + len(ds.events)
         for e in ds.events:
             _check_time(e.time, ds.device)
             if e.action not in ("on", "off", "press"):
@@ -27,6 +24,12 @@ def validate(schedule: Schedule, registry: Registry) -> None:
             for d in e.days:
                 if d not in DAYS:
                     raise ScheduleError(f"Bad day '{d}' for {ds.device}")
+    for device, total in counts.items():
+        if total > MAX_ALARMS:
+            raise ScheduleError(
+                f"{device} needs {total} alarms, but max is {MAX_ALARMS}. "
+                f"Simplify the schedule."
+            )
 
 
 def _check_time(t: str, device: str) -> None:

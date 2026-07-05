@@ -35,3 +35,14 @@ def test_bad_time_raises():
 def test_bad_day_raises():
     with pytest.raises(ScheduleError, match="day"):
         validate(_sched([Event("06:00", "on", ["funday"])]), _reg())
+
+
+def test_duplicate_device_blocks_exceeding_limit_raises():
+    events_a = [Event(f"0{h}:00", "on", ["sun"]) for h in range(3)]  # 3 alarms
+    events_b = [Event(f"1{h}:00", "off", ["sun"]) for h in range(3)]  # 3 alarms
+    schedule = Schedule(schedules=[
+        DeviceSchedule(device="living_room", events=events_a),
+        DeviceSchedule(device="living_room", events=events_b),
+    ])
+    with pytest.raises(ScheduleError, match="max is 5"):
+        validate(schedule, _reg())
