@@ -1,11 +1,11 @@
 devices:
   living_room:
     aliases: ["living room", "סלון", "salon"]
-    ble_id: ""   # CoreBluetooth UUID from spikes/FINDINGS.md
+    ble_id: "40EF82E1-E89F-58C5-930C-58D04473828E"   # CoreBluetooth UUID (macOS)
     inverted: true  # mounted upside down; on/off physically swapped
   dining:
     aliases: ["dining", "פינת אוכל", "dining nook"]
-    ble_id: ""
+    ble_id: "82433425-0CB9-60A7-199F-219B87D259FC"
   ac:
     aliases: ["ac", "air conditioner", "מזגן"]
-    ble_id: ""
+    ble_id: "3FD44C5A-BFCE-66AD-9A89-68EFDDC28699"

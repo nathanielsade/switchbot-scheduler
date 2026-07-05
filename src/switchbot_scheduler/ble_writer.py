@@ -3,8 +3,8 @@ from .encoder import encode_alarm
 from .model import Schedule
 from .registry import Registry
 
-# SwitchBot BLE GATT characteristics (confirm against spikes/FINDINGS.md).
-WRITE_CHAR = "cba20002-224d-11e6-9fb9-0002a5d5c51b"
+# SwitchBot BLE GATT characteristics (confirmed via spike against real Bots 2026-07-05).
+WRITE_CHAR = "cba20002-224d-11e6-9fb8-0002a5d5c51b"
 
 # Command frame layout (confirm bytes against spikes/FINDINGS.md):
 #   [0] 0x57 magic  [1] 0x09 set-time-management  [2] total count  [3] index
