@@ -28,7 +28,7 @@ def _registry() -> Registry:
 def schedule_to_json(s: Schedule) -> dict:
     return {"schedules": [
         {"device": ds.device,
-         "events": [{"time": e.time, "action": e.action, "days": e.days} for e in ds.events]}
+         "events": [{"time": e.time, "action": e.action, "days": e.days, "once": e.once} for e in ds.events]}
         for ds in s.schedules
     ]}
 

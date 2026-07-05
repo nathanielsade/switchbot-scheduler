@@ -66,3 +66,17 @@ def test_apply_reads_once(tmp_path, monkeypatch):
         "events": [{"time": "09:00", "action": "on", "days": ["mon"], "once": True}]}]}
     body = client.post("/apply", json={"schedule": sched}).json()
     assert body["ok"] is True and calls[0].schedules[0].events[0].once is True
+
+
+def test_once_round_trips_preview_to_apply(tmp_path, monkeypatch):
+    once_parser = lambda s, u: json.dumps({"schedules": [{"device": "living_room",
+        "events": [{"time": "09:00", "action": "on", "days": ["mon"], "once": True}]}]})
+    client = _client(tmp_path, monkeypatch, once_parser)
+    prev = client.post("/preview", json={"messages": ["living room on tomorrow, once"]}).json()
+    assert prev["kind"] == "schedule"
+    # once must survive serialization back to the client, else Approve loses it
+    assert prev["schedule"]["schedules"][0]["events"][0]["once"] is True
+    calls = []
+    monkeypatch.setattr(webapp, "write_schedule", lambda sc, r: calls.append(sc))
+    ap = client.post("/apply", json={"schedule": prev["schedule"]}).json()
+    assert ap["ok"] is True and calls[0].schedules[0].events[0].once is True
