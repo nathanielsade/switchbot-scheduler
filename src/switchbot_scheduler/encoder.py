@@ -10,12 +10,14 @@ def encode_alarm(event: Event, inverted: bool = False) -> dict:
     day_mask = 0
     for d in event.days:
         day_mask |= (1 << DAY_BIT[d])
+    if event.once:
+        day_mask |= 0x80   # bit 7 = execute once
     hour, minute = (int(x) for x in event.time.split(":"))
     action = event.action
     if inverted and action in ("on", "off"):
         action = "off" if action == "on" else "on"
     return {
-        "repeat_byte": day_mask,   # bit 7 = 0 => recurring weekly
+        "repeat_byte": day_mask,
         "hour": hour,
         "minute": minute,
         "action": ACTION_CODE[action],

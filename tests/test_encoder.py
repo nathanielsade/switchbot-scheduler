@@ -78,3 +78,14 @@ def test_build_clock_frame_local_time_big_endian():
     frame = build_clock_frame(1000, 3600)  # epoch 1000 + 1h offset = 4600
     assert frame[:3] == bytes([0x57, 0x09, 0x01])
     assert frame[3:] == (4600).to_bytes(8, "big")
+
+
+def test_encode_once_sets_bit7():
+    a = encode_alarm(Event("09:00", "on", ["mon"], once=True))
+    assert a["repeat_byte"] & 0x80 == 0x80
+    assert a["repeat_byte"] & 0x7f == 0b0000001  # mon still bit0
+
+
+def test_encode_recurring_leaves_bit7_clear():
+    a = encode_alarm(Event("09:00", "on", ["mon"], once=False))
+    assert a["repeat_byte"] & 0x80 == 0

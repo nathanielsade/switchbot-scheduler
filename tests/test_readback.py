@@ -20,3 +20,9 @@ def test_readback_lists_each_event():
     text = readback(sched)
     assert "living_room: on 06:00 — every day" in text
     assert "living_room: off 17:00 — every day" in text
+
+
+def test_readback_marks_one_time():
+    sched = Schedule(schedules=[DeviceSchedule(device="living_room",
+        events=[Event("09:00", "on", ["mon"], once=True)])])
+    assert "living_room: on 09:00 — once (mon)" in readback(sched)

@@ -10,6 +10,7 @@ class Event:
     time: str          # "HH:MM"
     action: Action     # "on" | "off" | "press"
     days: list[str]    # subset of DAYS
+    once: bool = False
 
 
 @dataclass

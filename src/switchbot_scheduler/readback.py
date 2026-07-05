@@ -18,5 +18,6 @@ def readback(schedule: Schedule) -> str:
     lines = []
     for ds in schedule.schedules:
         for e in ds.events:
-            lines.append(f"{ds.device}: {e.action} {e.time} — {describe_days(e.days)}")
+            when = f"once ({describe_days(e.days)})" if e.once else describe_days(e.days)
+            lines.append(f"{ds.device}: {e.action} {e.time} — {when}")
     return "\n".join(lines)

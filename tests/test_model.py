@@ -11,3 +11,7 @@ def test_schedule_nests_device_schedules_and_events():
     sched = Schedule(schedules=[ds])
     assert sched.schedules[0].events[0].time == "06:00"
     assert sched.schedules[0].device == "living_room"
+
+
+def test_event_once_defaults_false():
+    assert Event("06:00", "on", ["mon"]).once is False
