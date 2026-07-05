@@ -1,0 +1,4 @@
+{"schedules": [{"device": "living_room", "events": [
+  {"time": "06:00", "action": "on", "days": ["sun","mon","tue","wed","thu","fri","sat"]},
+  {"time": "17:00", "action": "off", "days": ["sun","mon","tue","wed","thu","fri","sat"]}
+]}]}
