@@ -21,6 +21,22 @@
   executes regardless (light/AC physically toggled). Don't treat 0x05 as failure.
 - ble_writer.py WRITE_CHAR updated to 9fb8; it already uses response=True.
 
-## STILL TO VERIFY
-- The 0x09 "set timer/alarm" frame (build_alarm_frames) — control works, but the
-  actual on-device alarm-set command has NOT yet been proven to fire.
+## TIMER PROTOCOL — VERIFIED (2026-07-05)
+Sequence per connection (unencrypted base 0x57 0x09), all acknowledged writes + notify:
+1. set clock: `57 09 01` + 8-byte big-endian (local unix = utc + tm_gmtoff)
+2. set count: `57 09 02 [n]`
+3. per alarm: `57 09 [idx*16+3] [n] 00 [repeat] HH MM [mode=00] [job] 00 00 00 00`
+   - repeat: bit7=0 repeat weekly; bits0..6 = Mon..Sun (from switchbotpy; verified-by-fire
+     for the overall protocol, weekday bit-order inferred, tested only with all-days 0x7F).
+   - job: 0=press, 1=on, 2=off. mode 0 = fire at HH:MM (repeating by weekday).
+- Ported into src/switchbot_scheduler/ble_writer.py (build_clock_frame/build_count_frame/
+  build_alarm_frames + write_alarms) and encoder DAY_BIT fixed to Mon=0..Sun=6.
+
+## FULL END-TO-END VERIFIED (2026-07-05, ~22:55)
+Real product path: CLI Hebrew prompt "כבה את פינת אוכל בשעה 22:55 כל יום" -> GPT parse ->
+dining off 22:55 every day -> write_schedule -> dining Bot turned OFF on its own at 22:55.
+
+## RESIDUAL (low risk)
+- Weekday bit-order inferred (all-days tested); confirm over first week or with a today-only test.
+- Living-room inversion is unit-tested but not yet hardware-verified (dining is non-inverted).
+- The e2e test left a real recurring "dining off 22:55 daily" alarm — clear/overwrite it.

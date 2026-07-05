@@ -43,6 +43,38 @@ async def services(ble_id: str):
                 print(f"    char {ch.uuid}  props={','.join(ch.properties)}")
 
 
+async def settimer(ble_id: str, minutes_ahead: int = 2):
+    """Program ONE on-device alarm to fire `minutes_ahead` from now, every day, action=press.
+    Sequence per SwitchBot BLE 0x09: set clock -> set count -> set alarm."""
+    import time
+    from bleak import BleakClient
+
+    now = time.time()
+    gmtoff = time.localtime(now).tm_gmtoff or 0
+    clock_ts = int(now) + gmtoff                      # device clock = local-time-as-unix
+    fire = time.localtime(now + minutes_ahead * 60)
+    hh, mm = fire.tm_hour, fire.tm_min
+
+    set_clock = b"\x57\x09\x01" + clock_ts.to_bytes(8, "big")
+    set_count = b"\x57\x09\x02\x01"                    # 1 alarm
+    # subcmd 0x03 (idx0), num=1, filler 0x00, repeat 0x7F (bit7=0 repeat, all 7 days),
+    # HH, MM, mode 0x00 (at HH:MM), job 0x00 (press), sum 0, interval 0,0,0
+    set_alarm = bytes([0x57, 0x09, 0x03, 0x01, 0x00, 0x7F, hh, mm, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    responses = []
+    async with BleakClient(ble_id) as client:
+        await client.start_notify(NOTIFY_CHAR, lambda _, d: responses.append(bytes(d)))
+        for label, cmd in [("set_clock", set_clock), ("set_count", set_count), ("set_alarm", set_alarm)]:
+            await client.write_gatt_char(WRITE_CHAR, cmd, response=True)
+            await asyncio.sleep(1.0)
+            reply = responses[-1].hex() if responses else "(none)"
+            print(f"{label}: sent {cmd.hex()}  <-- reply {reply}")
+        await asyncio.sleep(1.0)
+        await client.stop_notify(NOTIFY_CHAR)
+    print(f"\nAlarm set for {hh:02d}:{mm:02d} (in ~{minutes_ahead} min), every day, action=press.")
+    print("Watch the Bot at that time — the arm should move.")
+
+
 async def press(ble_id: str):
     from bleak import BleakClient
     responses = []
@@ -67,6 +99,9 @@ if __name__ == "__main__":
         asyncio.run(scan())
     elif cmd == "services":
         asyncio.run(services(sys.argv[2]))
+    elif cmd == "settimer":
+        mins = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+        asyncio.run(settimer(sys.argv[2], mins))
     elif cmd == "press":
         asyncio.run(press(sys.argv[2]))
     else:
