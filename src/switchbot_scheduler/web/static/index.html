@@ -29,78 +29,90 @@
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;max-width:80%}
   .card h4{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
   .card .line{padding:3px 0;font-variant-numeric:tabular-nums}
-  .actions{margin-top:12px;display:flex;gap:8px}
-  button{font:inherit;border:0;border-radius:10px;padding:9px 16px;cursor:pointer}
+  .actions{margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  button{font:inherit;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}
   .approve{background:var(--accent);color:var(--accent-ink);font-weight:600}
   .approve:disabled{opacity:.5;cursor:default}
   .status.ok{color:var(--ok);font-weight:600}
   .status.err{color:var(--err);font-weight:600}
-  form{display:flex;gap:10px;padding:14px 20px;border-top:1px solid var(--line);
+  form{display:flex;gap:10px;align-items:flex-end;padding:14px 20px;border-top:1px solid var(--line);
     max-width:760px;width:100%;margin:0 auto}
-  input{flex:1;font:inherit;padding:12px 14px;border:1px solid var(--line);border-radius:12px;
-    background:var(--panel);color:var(--ink)}
-  input:focus{outline:2px solid var(--accent);outline-offset:0}
+  textarea{flex:1;font:inherit;padding:12px 14px;border:1px solid var(--line);border-radius:12px;
+    background:var(--panel);color:var(--ink);resize:none;overflow-y:auto;max-height:180px;line-height:1.45}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:0}
+  form button{align-self:flex-end;height:46px}
 </style>
 </head>
 <body>
 <header>SwitchBot Scheduler<small>Type a schedule in Hebrew or English — you'll approve before anything is written.</small></header>
 <div id="log"></div>
-<form id="f"><input id="p" autocomplete="off" placeholder="e.g. turn סלון on 6am–5pm every day" autofocus><button class="approve" type="submit">Send</button></form>
+<form id="f">
+  <textarea id="p" rows="1" dir="auto" autocomplete="off" autofocus
+    placeholder="e.g. turn סלון on 6am–5pm every day  (Enter to send · Shift+Enter for a new line)"></textarea>
+  <button class="approve" type="submit">Send</button>
+</form>
 <script>
 const log = document.getElementById('log'), form = document.getElementById('f'), input = document.getElementById('p');
 
-function scroll(){ log.scrollTop = log.scrollHeight; }
-function add(el){ log.appendChild(el); scroll(); return el; }
+function toBottom(){ log.scrollTop = log.scrollHeight; }
+function add(el){ log.appendChild(el); toBottom(); return el; }
+
+function grow(){ input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 180) + 'px'; }
+input.addEventListener('input', grow);
+input.addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }
+});
 
 function userBubble(text){
-  const row = document.createElement('div'); row.className='row user';
-  const b = document.createElement('div'); b.className='bubble'; b.textContent=text;
+  const row = document.createElement('div'); row.className = 'row user';
+  const b = document.createElement('div'); b.className = 'bubble'; b.dir = 'auto'; b.textContent = text;
   row.appendChild(b); add(row);
 }
 function botBubble(text, cls){
-  const row = document.createElement('div'); row.className='row bot';
-  const b = document.createElement('div'); b.className='bubble'; if(cls) b.classList.add('status',cls);
-  b.textContent=text; row.appendChild(b); return add(row);
+  const row = document.createElement('div'); row.className = 'row bot';
+  const b = document.createElement('div'); b.className = 'bubble'; b.dir = 'auto';
+  if(cls) b.classList.add('status', cls);
+  b.textContent = text; row.appendChild(b); return add(row);
 }
 
 function readbackCard(readback, schedule){
-  const row = document.createElement('div'); row.className='row bot';
-  const card = document.createElement('div'); card.className='card';
-  const h = document.createElement('h4'); h.textContent='Here's what I understood'; card.appendChild(h);
-  readback.split('\n').forEach(line=>{
-    const d = document.createElement('div'); d.className='line'; d.textContent=line; card.appendChild(d);
+  const row = document.createElement('div'); row.className = 'row bot';
+  const card = document.createElement('div'); card.className = 'card';
+  const h = document.createElement('h4'); h.textContent = "Here is what I understood"; card.appendChild(h);
+  readback.split('\n').forEach((line)=>{
+    const d = document.createElement('div'); d.className = 'line'; d.dir = 'auto'; d.textContent = line; card.appendChild(d);
   });
-  const actions = document.createElement('div'); actions.className='actions';
-  const approve = document.createElement('button'); approve.className='approve'; approve.textContent='Approve & write';
-  const hint = document.createElement('span'); hint.style.color='var(--muted)'; hint.style.alignSelf='center';
-  hint.textContent='…or just type a correction';
+  const actions = document.createElement('div'); actions.className = 'actions';
+  const approve = document.createElement('button'); approve.className = 'approve'; approve.textContent = 'Approve & write';
+  const hint = document.createElement('span'); hint.style.color = 'var(--muted)';
+  hint.textContent = '…or just type a correction';
   actions.appendChild(approve); actions.appendChild(hint); card.appendChild(actions);
   row.appendChild(card); add(row);
 
   approve.onclick = async ()=>{
-    approve.disabled = true; approve.textContent='Writing…';
+    approve.disabled = true; approve.textContent = 'Writing…';
     try{
-      const r = await fetch('/apply',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({schedule})});
+      const r = await fetch('/apply', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({schedule})});
       const data = await r.json();
-      if(data.ok) botBubble('✅ Written to '+data.written.join(', '), 'ok');
-      else { botBubble('⚠️ '+data.error, 'err'); approve.disabled=false; approve.textContent='Approve & write'; }
-    }catch(e){ botBubble('⚠️ '+e, 'err'); approve.disabled=false; approve.textContent='Approve & write'; }
+      if(data.ok){ botBubble('✅ Written to ' + data.written.join(', '), 'ok'); }
+      else { botBubble('⚠️ ' + data.error, 'err'); approve.disabled = false; approve.textContent = 'Approve & write'; }
+    }catch(err){ botBubble('⚠️ ' + err, 'err'); approve.disabled = false; approve.textContent = 'Approve & write'; }
   };
 }
 
 form.onsubmit = async (e)=>{
   e.preventDefault();
   const prompt = input.value.trim(); if(!prompt) return;
-  input.value=''; userBubble(prompt);
+  input.value = ''; grow(); userBubble(prompt);
   const thinking = botBubble('…');
   try{
-    const r = await fetch('/preview',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({prompt})});
+    const r = await fetch('/preview', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({prompt})});
     const data = await r.json(); thinking.remove();
-    if(data.ok) readbackCard(data.readback, data.schedule);
-    else botBubble('⚠️ '+data.error, 'err');
-  }catch(e){ thinking.remove(); botBubble('⚠️ '+e, 'err'); }
+    if(data.ok){ readbackCard(data.readback, data.schedule); }
+    else { botBubble('⚠️ ' + data.error, 'err'); }
+  }catch(err){ thinking.remove(); botBubble('⚠️ ' + err, 'err'); }
 };
 </script>
 </body>
