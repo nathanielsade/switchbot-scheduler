@@ -12,3 +12,11 @@ def test_cli_dry_run_prints_readback(monkeypatch, capsys, tmp_path):
     out = capsys.readouterr().out
     assert code == 0
     assert "living_room: on 06:00 — every day" in out
+
+
+def test_cli_missing_devices_file_returns_1(capsys, tmp_path):
+    missing = tmp_path / "does_not_exist.yaml"
+    code = cli.main(["--devices", str(missing), "--dry-run", "living room 6 to 5"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert err.strip() != ""   # a friendly message went to stderr

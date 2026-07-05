@@ -22,8 +22,8 @@ def main(argv=None) -> int:
     group.add_argument("--write", dest="dry_run", action="store_false")
     args = ap.parse_args(argv)
 
-    registry = Registry.load(args.devices)
     try:
+        registry = Registry.load(args.devices)
         outcome, text, _ = apply_schedule(
             args.prompt, registry,
             dry_run=args.dry_run, confirm=_confirm,
