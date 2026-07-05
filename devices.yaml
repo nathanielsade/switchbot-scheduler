@@ -1,0 +1,10 @@
+devices:
+  living_room:
+    aliases: ["living room", "סלון", "salon"]
+    ble_id: ""   # CoreBluetooth UUID from spikes/FINDINGS.md
+  dining:
+    aliases: ["dining", "פינת אוכל", "dining nook"]
+    ble_id: ""
+  ac:
+    aliases: ["ac", "air conditioner", "מזגן"]
+    ble_id: ""
