@@ -1,5 +1,6 @@
 import argparse
 import sys
+from .config import load_env
 from .registry import Registry
 from .core import apply_schedule
 from .ble_writer import write_schedule
@@ -13,6 +14,7 @@ def _confirm(text: str) -> bool:
 
 
 def main(argv=None) -> int:
+    load_env()
     argv = sys.argv[1:] if argv is None else argv
     ap = argparse.ArgumentParser(prog="switchbot-schedule")
     ap.add_argument("prompt", help="schedule in plain Hebrew/English")

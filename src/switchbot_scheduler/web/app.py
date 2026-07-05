@@ -6,12 +6,15 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from ..config import load_env
 from ..registry import Registry
 from ..core import build_schedule, preview_conversation
 from ..readback import readback
 from ..ble_writer import write_schedule
 from ..validator import validate
 from ..model import Schedule, DeviceSchedule, Event
+
+load_env()  # pick up OPENAI_API_KEY from a local .env if present (shell exports still win)
 
 STATIC = Path(__file__).parent / "static"
 
