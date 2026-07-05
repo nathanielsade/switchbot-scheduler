@@ -1,4 +1,4 @@
-from .parser import parse_schedule
+from .parser import parse_schedule, parse_conversation
 from .validator import validate
 from .readback import readback
 from .model import Schedule
@@ -11,6 +11,17 @@ def build_schedule(prompt: str, registry: Registry, completion_fn=None) -> Sched
     validate(schedule, registry)
     _apply_press_mode(schedule, registry)
     return schedule
+
+
+def preview_conversation(messages, registry: Registry, now, completion_fn=None):
+    kwargs = {"completion_fn": completion_fn} if completion_fn is not None else {}
+    result = parse_conversation(messages, registry, now, **kwargs)
+    if result.clarification is not None:
+        return ("clarification", result.clarification, None)
+    schedule = result.schedule
+    validate(schedule, registry)
+    _apply_press_mode(schedule, registry)
+    return ("schedule", readback(schedule), schedule)
 
 
 def _apply_press_mode(schedule: Schedule, registry: Registry) -> None:

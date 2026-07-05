@@ -14,17 +14,25 @@ def _client(tmp_path, monkeypatch, completion=None):
     return TestClient(webapp.app)
 
 
-def test_preview_returns_readback_and_schedule(tmp_path, monkeypatch):
-    body = _client(tmp_path, monkeypatch).post("/preview", json={"prompt": "salon on 6am"}).json()
-    assert body["ok"] is True
+def test_preview_thread_returns_schedule_kind(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)  # canned parser returns living_room on 06:00
+    body = client.post("/preview", json={"messages": ["salon on 6am"]}).json()
+    assert body["ok"] is True and body["kind"] == "schedule"
     assert "living_room: on 06:00" in body["readback"]
-    assert body["schedule"]["schedules"][0]["device"] == "living_room"
+
+
+def test_preview_thread_returns_clarification_kind(tmp_path, monkeypatch):
+    import json
+    clar = lambda s, u: json.dumps({"clarification": "Which room?"})
+    client = _client(tmp_path, monkeypatch, clar)
+    body = client.post("/preview", json={"messages": ["do the thing"]}).json()
+    assert body["ok"] is True and body["kind"] == "clarification" and body["message"] == "Which room?"
 
 
 def test_preview_unknown_device_returns_error(tmp_path, monkeypatch):
     bad = lambda s, u: json.dumps({"schedules": [{"device": "bedroom",
         "events": [{"time": "06:00", "action": "on", "days": ["mon"]}]}]})
-    body = _client(tmp_path, monkeypatch, bad).post("/preview", json={"prompt": "bedroom on"}).json()
+    body = _client(tmp_path, monkeypatch, bad).post("/preview", json={"messages": ["bedroom on"]}).json()
     assert body["ok"] is False and "Unknown device" in body["error"]
 
 
@@ -48,3 +56,13 @@ def test_apply_ble_failure_returns_error(tmp_path, monkeypatch):
         "events": [{"time": "06:00", "action": "on", "days": ["mon"]}]}]}
     body = client.post("/apply", json={"schedule": sched}).json()
     assert body["ok"] is False and "reach" in body["error"]
+
+
+def test_apply_reads_once(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(webapp, "write_schedule", lambda s, r: calls.append(s))
+    sched = {"schedules": [{"device": "living_room",
+        "events": [{"time": "09:00", "action": "on", "days": ["mon"], "once": True}]}]}
+    body = client.post("/apply", json={"schedule": sched}).json()
+    assert body["ok"] is True and calls[0].schedules[0].events[0].once is True

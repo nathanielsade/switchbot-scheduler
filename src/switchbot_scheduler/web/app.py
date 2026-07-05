@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -6,7 +7,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..registry import Registry
-from ..core import build_schedule
+from ..core import build_schedule, preview_conversation
 from ..readback import readback
 from ..ble_writer import write_schedule
 from ..validator import validate
@@ -35,13 +36,14 @@ def schedule_to_json(s: Schedule) -> dict:
 def schedule_from_json(data: dict) -> Schedule:
     return Schedule(schedules=[
         DeviceSchedule(device=s["device"], events=[
-            Event(time=e["time"], action=e["action"], days=e["days"]) for e in s["events"]
+            Event(time=e["time"], action=e["action"], days=e["days"], once=bool(e.get("once", False)))
+            for e in s["events"]
         ]) for s in data["schedules"]
     ])
 
 
 class PreviewReq(BaseModel):
-    prompt: str
+    messages: list[str]
 
 
 class ApplyReq(BaseModel):
@@ -57,8 +59,11 @@ def index():
 def preview(req: PreviewReq):
     try:
         registry = _registry()
-        schedule = build_schedule(req.prompt, registry, completion_fn=_completion_fn)
-        return {"ok": True, "readback": readback(schedule), "schedule": schedule_to_json(schedule)}
+        kind, payload, schedule = preview_conversation(
+            req.messages, registry, datetime.now(), completion_fn=_completion_fn)
+        if kind == "clarification":
+            return {"ok": True, "kind": "clarification", "message": payload}
+        return {"ok": True, "kind": "schedule", "readback": payload, "schedule": schedule_to_json(schedule)}
     except Exception as err:
         return {"ok": False, "error": str(err)}
 
