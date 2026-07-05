@@ -7,7 +7,13 @@ MODEL = "gpt-4o-mini"  # small, cheap, supports JSON output; change here to swap
 
 
 def build_system_prompt(registry: Registry) -> str:
-    names = ", ".join(registry.known_names())
+    device_lines = []
+    for d in registry.devices:
+        if d.aliases:
+            device_lines.append(f"{d.name} (aliases: {', '.join(d.aliases)})")
+        else:
+            device_lines.append(d.name)
+    names = "\n".join(device_lines)
     return f"""You convert natural-language lighting/device schedules (Hebrew or English)
 into strict JSON. Output ONLY JSON, no prose.
 
@@ -46,11 +52,11 @@ def parse_schedule(prompt: str, registry: Registry, completion_fn=_default_compl
     system = build_system_prompt(registry)
     raw = completion_fn(system, prompt)
     data = json.loads(raw)
-    schedules = [
-        DeviceSchedule(
-            device=s["device"],
-            events=[Event(time=e["time"], action=e["action"], days=e["days"]) for e in s["events"]],
-        )
-        for s in data["schedules"]
-    ]
+    schedules = []
+    for s in data["schedules"]:
+        raw_device = s["device"]
+        canonical = registry.resolve(raw_device)
+        device = canonical if canonical is not None else raw_device
+        events = [Event(time=e["time"], action=e["action"], days=e["days"]) for e in s["events"]]
+        schedules.append(DeviceSchedule(device=device, events=events))
     return Schedule(schedules=schedules)
