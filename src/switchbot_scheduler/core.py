@@ -9,7 +9,17 @@ def build_schedule(prompt: str, registry: Registry, completion_fn=None) -> Sched
     kwargs = {"completion_fn": completion_fn} if completion_fn is not None else {}
     schedule = parse_schedule(prompt, registry, **kwargs)
     validate(schedule, registry)
+    _apply_press_mode(schedule, registry)
     return schedule
+
+
+def _apply_press_mode(schedule: Schedule, registry: Registry) -> None:
+    """A press-mode Bot only toggles, so any on/off intent becomes a single press.
+    Done here (not just at encode time) so the read-back honestly shows 'press'."""
+    for ds in schedule.schedules:
+        if registry.is_press_mode(ds.device):
+            for e in ds.events:
+                e.action = "press"
 
 
 def apply_schedule(prompt, registry, *, dry_run=True, confirm=lambda text: True,

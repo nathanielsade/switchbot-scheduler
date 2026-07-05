@@ -9,3 +9,4 @@ devices:
   ac:
     aliases: ["ac", "air conditioner", "מזגן"]
     ble_id: "3FD44C5A-BFCE-66AD-9A89-68EFDDC28699"
+    mode: press   # momentary toggle only (no real on/off); on/off intent -> a press

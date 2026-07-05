@@ -8,6 +8,7 @@ class Device:
     aliases: list[str]
     ble_id: str
     inverted: bool = False
+    mode: str = "switch"   # "switch" (on/off) or "press" (momentary toggle)
 
 
 class Registry:
@@ -30,6 +31,7 @@ class Registry:
                 aliases=cfg.get("aliases", []),
                 ble_id=cfg.get("ble_id", ""),
                 inverted=cfg.get("inverted", False),
+                mode=cfg.get("mode", "switch"),
             )
             for name, cfg in data["devices"].items()
         ]
@@ -46,3 +48,6 @@ class Registry:
 
     def is_inverted(self, name: str) -> bool:
         return self._by_name[name].inverted
+
+    def is_press_mode(self, name: str) -> bool:
+        return self._by_name[name].mode == "press"

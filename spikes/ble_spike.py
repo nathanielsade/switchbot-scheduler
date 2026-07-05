@@ -75,6 +75,27 @@ async def settimer(ble_id: str, minutes_ahead: int = 2):
     print("Watch the Bot at that time — the arm should move.")
 
 
+async def clear(ble_id: str):
+    """Disable all alarms on a Bot: set count 0 and overwrite slots 0..4 with repeat=0x00 (no days)."""
+    import time
+    from bleak import BleakClient
+    now = time.time()
+    gmtoff = time.localtime(now).tm_gmtoff or 0
+    clock_ts = int(now) + gmtoff
+    frames = [b"\x57\x09\x01" + clock_ts.to_bytes(8, "big"), b"\x57\x09\x02\x00"]  # clock, count=0
+    for i in range(5):
+        frames.append(bytes([0x57, 0x09, i * 16 + 3, 0x00, 0x00, 0x00, 0, 0, 0x00, 0x00, 0, 0, 0, 0]))
+    responses = []
+    async with BleakClient(ble_id) as client:
+        await client.start_notify(NOTIFY_CHAR, lambda _, d: responses.append(bytes(d)))
+        for f in frames:
+            await client.write_gatt_char(WRITE_CHAR, f, response=True)
+            await asyncio.sleep(0.4)
+        await asyncio.sleep(0.5)
+        await client.stop_notify(NOTIFY_CHAR)
+    print(f"cleared alarms on {ble_id} ({len([r for r in responses if r[:1]==b'\\x01'])}/{len(responses)} ok replies)")
+
+
 async def press(ble_id: str):
     from bleak import BleakClient
     responses = []
@@ -102,6 +123,8 @@ if __name__ == "__main__":
     elif cmd == "settimer":
         mins = int(sys.argv[3]) if len(sys.argv) > 3 else 2
         asyncio.run(settimer(sys.argv[2], mins))
+    elif cmd == "clear":
+        asyncio.run(clear(sys.argv[2]))
     elif cmd == "press":
         asyncio.run(press(sys.argv[2]))
     else:
