@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 from switchbot_scheduler.registry import Registry, Device
 from switchbot_scheduler.core import apply_schedule
 
@@ -44,3 +45,9 @@ def test_confirm_yes_writes():
     )
     assert outcome == "written"
     assert len(wrote) == 1
+
+
+def test_dry_run_false_without_writer_raises():
+    with pytest.raises(ValueError):
+        apply_schedule("living room 6 to 5", _reg(), dry_run=False,
+                       confirm=lambda text: False, writer=None, completion_fn=_fn)

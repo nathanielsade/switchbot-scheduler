@@ -18,9 +18,9 @@ def apply_schedule(prompt, registry, *, dry_run=True, confirm=lambda text: True,
     text = readback(schedule)
     if dry_run:
         return ("dry_run", text, schedule)
-    if not confirm(text):
-        return ("cancelled", text, schedule)
     if writer is None:
         raise ValueError("writer is required when dry_run=False")
+    if not confirm(text):
+        return ("cancelled", text, schedule)
     writer(schedule, registry)
     return ("written", text, schedule)
