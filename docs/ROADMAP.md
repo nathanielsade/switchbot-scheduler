@@ -14,7 +14,7 @@ Each epic, when reached, gets its own breakdown doc (`docs/epics/`) with its tas
 then a TDD plan at build time. This file is the map; the session todo list tracks the *current* epic.
 
 ## Epic sequence & status  (order = dependency + value, NOT existing code)
-1. ⬜ **Agent core** — Telegram ↔ Claude tool-use loop (+ family system prompt + memory). Build first; locally, with one throwaway tool. ← **NEXT** (`docs/epics/epic-1-agent-core.md`)
+1. ⬜ **Agent core** — Telegram ↔ OpenAI function-calling loop (+ family system prompt + memory). Build first; locally, with one throwaway tool. ← **NEXT** (`docs/epics/epic-1-agent-core.md`)
 2. ⬜ **Infra / home box** — Linux + BlueZ + systemd + re-scan Bots (overlaps #1)
 3. ⬜ **home-mcp** — wrap the existing scheduler code
 4. ⬜ **family-mcp** — reminders + shopping + calendar + `schedule_task`/memory
@@ -32,7 +32,7 @@ We already built a **natural-language SwitchBot scheduler** (repo `nathanielsade
 - Verified on real hardware; 62 tests.
 
 The brief changes two foundational things:
-1. **Brain: OpenAI single-call → Claude API agentic tool-use** (Claude decides which tools to call; no hardcoded routing).
+1. **Brain: OpenAI single-call (a parser) → OpenAI agentic function-calling loop** (the model decides which tools to call; no hardcoded routing). **Same provider — no migration**; reuses the existing OpenAI setup + credit.
 2. **Interface: local web page → shared Telegram group.**
 Everything we built (registry, validator, encoder, ble_writer, devices.yaml) is **reused** — rewrapped as `home-mcp` tools under the new agent.
 
@@ -41,8 +41,8 @@ Everything we built (registry, validator, encoder, ble_writer, devices.yaml) is 
 Telegram group (me + wife + bot)
       │  python-telegram-bot (~150 lines), allowlisted to our chat IDs
       ▼
-Claude API — tool-use loop (agentic), model claude-opus-4-8
-      │  standing system prompt = family context (prompt-cached)
+OpenAI API — function-calling loop (agentic), model gpt-4o
+      │  standing system prompt = family context (auto prompt-cached)
       ├── home-mcp     (AC, lights, scenes)      ← wraps our existing code
       ├── family-mcp   (calendar, reminders, shopping list, shared memory)
       └── finance-mcp  (wrapper over Firefly III)
@@ -55,9 +55,9 @@ Single agent, ~20 tools, multiple small MCP servers (fault isolation + separate 
 
 ## Key decisions & reconciliations (resolve before/while building)
 
-**D1 — Claude tool-use, local MCP servers.** Use the Anthropic Python SDK's local-MCP path: run each MCP server as a local process, convert its tools with `anthropic.lib.tools.mcp` (`mcp_tool`/`async_mcp_tool`) and drive the loop with `client.beta.messages.tool_runner(...)`. (The hosted `mcp_servers` connector is for *remote* servers; ours are local, so use the SDK helpers.)
+**D1 — OpenAI function-calling loop; tools now, MCP later.** Build the agent as an OpenAI **function-calling loop** (send message + tool/function defs → model returns tool calls → execute → feed results back → repeat until it stops calling tools). Epic 1 uses in-process function tools. For the MCP servers (Epic 3+), bridge each MCP server's tools into OpenAI function definitions — either manually, or via the **OpenAI Agents SDK** (which speaks MCP + tool loops natively). Decide the manual-loop-vs-Agents-SDK question at Epic 3; Epic 1 doesn't need it.
 
-**D2 — Model.** Default **`claude-opus-4-8`** (adaptive thinking for anything non-trivial; `output_config.effort` to tune cost). For a 24/7 personal agent, cost is real — **`claude-sonnet-5`** (cheaper, near-Opus) or **`claude-haiku-4-5`** (cheapest, for simple turns) are valid if you choose them. **Prompt-cache the family-context system prompt** (it's sent every turn) to cut cost ~90% on that prefix.
+**D2 — Model.** Default **`gpt-4o`** for the agent (strong tool orchestration); **`gpt-4o-mini`** for cheap/simple turns (what the old parser used). A reasoning model is an option for hard planning turns. Confirm the current best OpenAI model at build time. OpenAI **auto-caches** long stable prompt prefixes, so keeping the family-context system prompt byte-stable gives the caching win with no extra config.
 
 **D3 — Home scheduling model: retire BLE on-device timers in favor of cron.** The whole premise is now an always-on box. So `home-mcp` exposes **immediate** actions (`set_ac`, `set_light`, `press`) over the BLE control we already proved, and *scheduling* is done by the general **`schedule_task`** tool (writes a cron line + prompt that re-runs the agent at time T). This unifies "schedule anything" for free and drops the fragile on-device-timer reverse-engineering. *(Alternative: keep on-device timers for offline robustness. Recommend cron; confirm.)*
 
@@ -75,13 +75,13 @@ Prereq for everything (from earlier sessions: no Mac dependency, wife-friendly).
 - [ ] Run services (bot + MCP servers) under **systemd** (auto-start on boot, restart on crash); laptop lid-close = no-sleep (`HandleLidSwitch=ignore`).
 - [ ] Secrets: encrypted env file, `chmod 600`, loaded by systemd; rotate the OpenAI/SwitchBot creds that leaked into chat.
 
-## Epic A — Agent core (Telegram ↔ Claude tool-use loop)
+## Epic A — Agent core (Telegram ↔ OpenAI function-calling loop)
 The brain transplant + interface. **Build order step 1.**
 - [ ] Telegram bot skeleton (`python-telegram-bot`), **allowlist** our chat IDs / group ID; ignore everyone else.
-- [ ] Claude tool-use loop: send message + tool defs → run tools → feed results → repeat until `end_turn` (SDK `tool_runner`); `claude-opus-4-8`, adaptive thinking.
+- [ ] OpenAI function-calling loop: send message + tool defs → run tools → feed results → repeat until the model stops calling tools; `gpt-4o`.
 - [ ] Standing **system prompt** = family context (who we are, tone, Hebrew responses); **prompt-cached**.
 - [ ] SQLite conversation history / shared memory (stateless API → resend context each turn).
-- [ ] **Vertical slice:** wire ONE simple tool (`set_ac`) end-to-end — Telegram → Claude → tool → Bot → reply. Proves the whole spine before adding modules.
+- [ ] **Vertical slice:** wire ONE simple tool (`set_ac`) end-to-end — Telegram → OpenAI → tool → Bot → reply. Proves the whole spine before adding modules.
 
 ## Epic B — home-mcp (wrap the existing smart-home code)
 **Build order step 2.** Reuse registry/validator/encoder/ble_writer.
@@ -97,7 +97,7 @@ The brain transplant + interface. **Build order step 1.**
 - [ ] **Smart shopping list** (SQLite, shared): add/remove in chat; both see the same list.
   - [ ] Every purchased item stored **with a date** → learn purchase cycles ("milk every ~5 days").
   - [ ] On shopping day, propose a list from history ("probably out of: milk, eggs, bread").
-  - [ ] **Receipt photos** → Claude **vision** reads them, updates what was bought + cost.
+  - [ ] **Receipt photos** → OpenAI **vision** reads them, updates what was bought + cost.
 
 ## Epic D — schedule_task + shared memory
 **Build order step 4.** (Reminders/scheduling in C depend on `schedule_task`; formalize it here.)
@@ -105,7 +105,7 @@ The brain transplant + interface. **Build order step 1.**
 - [ ] `remember(fact)` / `recall(question)` over SQLite ("where did we put the passports?").
 
 ## Epic E — finance-mcp (Firefly III + bank importer)
-**Build order step 5.** Read-only. Claude is the insight layer.
+**Build order step 5.** Read-only. OpenAI is the insight layer.
 - [ ] **Firefly III** self-hosted (Docker) on the home box; category rule engine ("שופרסל" → groceries).
 - [ ] **`israeli-bank-scrapers`** nightly cron (all major IL banks/cards incl. 2FA) → importer → Firefly.
 - [ ] **`firefly-iii-mcp`** (existing OSS, via `npx`) → agent queries transactions/budgets/insights.
@@ -116,7 +116,7 @@ The brain transplant + interface. **Build order step 1.**
 
 ## Epic F — payslip ingestion (הפרשות)
 **Build order step 6.**
-- [ ] Send payslip PDF to the bot → Claude **vision/PDF** extracts gross, net, employee/employer pension, keren hishtalmut, tax → `save_payslip` → SQLite.
+- [ ] Send payslip PDF to the bot → OpenAI **vision/PDF** extracts gross, net, employee/employer pension, keren hishtalmut, tax → `save_payslip` → SQLite.
 - [ ] Enables: payslip error checking, real savings picture, gross-vs-net trends.
 - [ ] Pension-projection calculator tool using real contribution data; quarterly fund statements the same way.
 
@@ -130,7 +130,7 @@ The brain transplant + interface. **Build order step 1.**
 
 ## Cross-cutting
 - **Observability/cost:** log per-turn token usage (`response.usage`); watch the 24/7 spend; use effort/model tier + prompt caching to control it.
-- **Testing:** keep the deterministic tools unit-tested (as today); mock the Claude loop with canned tool-call sequences; MCP servers testable in isolation.
+- **Testing:** keep the deterministic tools unit-tested (as today); mock the OpenAI loop with canned tool-call sequences; MCP servers testable in isolation.
 - **Docs:** each MCP server + the agent get their own spec (brainstorm → plan) as we reach that epic.
 
 ## Suggested sequencing
