@@ -13,6 +13,15 @@ from a non-allowlisted chat is ignored.
 **Out of scope for Epic 1:** MCP servers, the home box, real hardware, any real capability.
 One in-process fake tool only. (MCP + real tools start in Epic 3.)
 
+**Portability — build on this Mac, run on a Linux PC.** The 24/7 runtime is a **Linux** machine,
+not this Mac. Epic 1 is pure Python (`openai` / `python-telegram-bot` / `sqlite3`) and clones-and-runs
+on Linux with **no code changes**. Rules we enforce so that stays true:
+- **No hardcoded absolute paths** — DB and config paths are relative to the repo or read from `.env`.
+- **Machine-specific values live only in `.env`** (git-ignored); ship a committed **`.env.example`**. The Linux PC gets its own `.env`.
+- **Pin `requires-python = ">=3.11"`.**
+The only per-machine reconciliation in the whole project is **Bluetooth device addresses** (Linux MACs
+vs macOS UUIDs) — that's config, handled in the Infra/Epic-3 re-scan, never a code change.
+
 ---
 
 ## Prerequisites & decisions (confirm before building)
