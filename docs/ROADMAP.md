@@ -5,6 +5,25 @@
 > manages shared family life, and acts as household financial analyst.
 > Full vision: see the Project Brief (this doc is the epics/tasks breakdown of it).
 
+## Working method (so we never lose the thread)
+Hierarchy: **Project → Epic → Task → Step.**
+- **Epic** — a big capability that ships something usable on its own.
+- **Task** — smallest reviewable unit; every task carries **Goal / Context / Definition of Done / How to test**.
+- **Step** — bite-sized TDD action (write test → run → implement → commit).
+Each epic, when reached, gets its own breakdown doc (`docs/epics/`) with its tasks fully specified,
+then a TDD plan at build time. This file is the map; the session todo list tracks the *current* epic.
+
+## Epic sequence & status  (order = dependency + value, NOT existing code)
+1. ⬜ **Agent core** — Telegram ↔ Claude tool-use loop (+ family system prompt + memory). Build first; locally, with one throwaway tool. ← **NEXT** (`docs/epics/epic-1-agent-core.md`)
+2. ⬜ **Infra / home box** — Linux + BlueZ + systemd + re-scan Bots (overlaps #1)
+3. ⬜ **home-mcp** — wrap the existing scheduler code
+4. ⬜ **family-mcp** — reminders + shopping + calendar + `schedule_task`/memory
+5. ⬜ **finance-mcp** — Firefly + bank scrapers + weekly summary (read-only)
+6. ⬜ **payslips** (vision)
+7. ⬜ **Israeli live-price layer**
+
+*(The old "what did I set last Friday" history idea is folded into the agent's SQLite memory — Epics 1 & 4 — not a separate feature.)*
+
 ## Where we are today (becomes Module 1)
 We already built a **natural-language SwitchBot scheduler** (repo `nathanielsade/switchbot-scheduler`):
 - Prompt (He/En) → schedule → validate → encode → **Bluetooth** control of the Bots.
