@@ -31,3 +31,98 @@ def test_one_time_target_rolls_to_next_day_when_past():
     day, fire_at = _one_time_target("18:00", _thu_1824())   # already past 18:24
     assert day == "fri"
     assert fire_at.startswith("2026-07-10T18:00")
+
+
+from switchbot_scheduler.registry import Registry, Device
+from home_agent.schedule_store import ScheduleStore
+from home_agent.schedules import build_schedule_tools
+
+
+def _registry():
+    return Registry([
+        Device(name="living_room", aliases=["סלון"], ble_id="ID1", inverted=True),
+        Device(name="ac", aliases=["מזגן"], ble_id="ID2", mode="press"),
+        Device(name="dining", aliases=["פינת אוכל"], ble_id="ID3"),
+    ])
+
+
+def _tool(tools, name):
+    return next(t for t in tools if t.name == name)
+
+
+def _tools(tmp_path, writes, now=None):
+    store = ScheduleStore(str(tmp_path / "s.db"))
+    return build_schedule_tools(
+        _registry(), store,
+        write_fn=lambda ble_id, alarms: writes.append((ble_id, alarms)),
+        now_fn=(now or _thu_1824)), store
+
+
+def test_schedule_one_time_sets_once_bit_and_correct_time(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes)
+    out = _tool(tools, "schedule_device").impl({"device": "פינת אוכל", "action": "on", "time": "18:29"})
+    assert "dining" in out and "✅" in out
+    ble_id, alarms = writes[-1]
+    assert ble_id == "ID3" and len(alarms) == 1
+    assert alarms[0]["hour"] == 18 and alarms[0]["minute"] == 29
+    assert alarms[0]["repeat_byte"] & 0x80          # one-time bit set
+    row = store.list("dining")[0]
+    assert row["once"] is True and row["days"] == ["thu"]
+
+
+def test_schedule_recurring_expands_days_no_once_bit(tmp_path):
+    writes = []
+    tools, _ = _tools(tmp_path, writes)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["weekdays"]})
+    _, alarms = writes[-1]
+    assert not (alarms[0]["repeat_byte"] & 0x80)    # not one-time
+
+
+def test_schedule_applies_inversion_and_press(tmp_path):
+    writes = []
+    tools, _ = _tools(tmp_path, writes)
+    _tool(tools, "schedule_device").impl({"device": "סלון", "action": "on", "time": "18:00"})
+    assert writes[-1][1][0]["action"] == 2          # inverted on -> off code 2
+    _tool(tools, "schedule_device").impl({"device": "מזגן", "action": "on", "time": "18:00"})
+    assert writes[-1][1][0]["action"] == 0          # press-mode -> press code 0
+
+
+def test_schedule_rewrites_full_set_for_device(tmp_path):
+    writes = []
+    tools, _ = _tools(tmp_path, writes)
+    st = _tool(tools, "schedule_device")
+    st.impl({"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    st.impl({"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"]})
+    assert len(writes[-1][1]) == 2                  # 2nd write carries BOTH timers
+
+
+def test_schedule_rejects_over_five_cap_and_rolls_back(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes)
+    st = _tool(tools, "schedule_device")
+    for i in range(5):
+        st.impl({"device": "פינת אוכל", "action": "on", "time": f"0{i}:00", "days": ["mon"]})
+    out = st.impl({"device": "פינת אוכל", "action": "on", "time": "06:00", "days": ["mon"]})
+    assert "5" in out or "max" in out.lower()
+    assert len(store.list("dining")) == 5           # 6th rolled back
+    assert len(writes) == 5                         # no write for the rejected 6th
+
+
+def test_schedule_write_failure_rolls_back(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.db"))
+
+    def boom(ble_id, alarms):
+        raise RuntimeError("out of range")
+
+    tools = build_schedule_tools(_registry(), store, write_fn=boom, now_fn=_thu_1824)
+    out = _tool(tools, "schedule_device").impl({"device": "פינת אוכל", "action": "on", "time": "18:00"})
+    assert "dining" in out and ("range" in out or "couldn't" in out.lower())
+    assert store.list("dining") == []               # nothing persisted
+
+
+def test_schedule_unknown_device(tmp_path):
+    tools, _ = _tools(tmp_path, [])
+    out = _tool(tools, "schedule_device").impl({"device": "garage", "action": "on", "time": "18:00"})
+    assert "unknown device" in out.lower()
