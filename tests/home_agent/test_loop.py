@@ -1,0 +1,37 @@
+from types import SimpleNamespace
+from home_agent.agent import run_turn
+
+
+def _tool(name, impl):
+    schema = {"type": "function", "function": {"name": name, "description": name,
+              "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+    return SimpleNamespace(name=name, schema=schema, impl=impl)
+
+
+def test_loop_executes_tool_then_returns_final_text(make_fake_client):
+    ran = []
+    tool = _tool("do_it", lambda args: ran.append(args) or "tool-output")
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "do_it", "arguments": {}}]},
+        {"content": "final answer"},
+    ])
+    reply = run_turn("hi", [], client=client, model="gpt-4o", system="S", tools=[tool])
+    assert reply == "final answer"
+    assert ran == [{}]                     # tool impl ran once
+    # second request carried the tool result back to the model
+    second_msgs = client._calls[1]["messages"]
+    assert any(m["role"] == "tool" and m["content"] == "tool-output" for m in second_msgs)
+
+
+def test_loop_returns_tool_error_as_result(make_fake_client):
+    def boom(args):
+        raise RuntimeError("kaboom")
+    tool = _tool("do_it", boom)
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "do_it", "arguments": {}}]},
+        {"content": "handled"},
+    ])
+    reply = run_turn("hi", [], client=client, model="gpt-4o", system="S", tools=[tool])
+    assert reply == "handled"
+    tool_msg = next(m for m in client._calls[1]["messages"] if m["role"] == "tool")
+    assert "kaboom" in tool_msg["content"]
