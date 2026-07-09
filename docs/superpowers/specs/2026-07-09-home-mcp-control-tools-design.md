@@ -81,8 +81,10 @@ can graduate to an MCP server later with no redesign.
 - **impl:** resolve the alias via `Registry.resolve`; if unknown → return a readable message naming the
   known devices (no exception). Otherwise build one `ImmediateAction(name, action)` and call
   `run_immediate([action], registry, actuate_fn)`. Convert the single `ActionResult` to a short string:
-  success → `"{device}: {resolved_action} ✅"` (resolved action reflects inversion/press mapping);
-  failure → `"{device}: failed — {error}"`. The model relays it in Hebrew.
+  success → `"{device}: {requested_action} ✅"` — reports the user's REQUESTED action so an
+  inverted device turned "on" confirms "on" (not the resolved wire "off"); press-mode devices
+  report "press". failure → `"{device}: failed — {error}"`. The model relays it in Hebrew.
+  (Amended from the original "report resolved action" per the final review.)
 
 ### 2. `list_devices()`
 - **description:** "List the home devices you can control — names, Hebrew/English aliases, and type.
@@ -113,7 +115,7 @@ can graduate to an MCP server later with no redesign.
 `"תדליק את הסלון"` → `on_message` → `handle_message(..., tools=<time+home>)` → `run_turn` → model calls
 `control_device("סלון","on")` → resolve → `living_room`; `run_immediate` → `resolve_action` swaps to
 `off` (inverted) → BLE control `0x57 0x01 0x02` fires → `ActionResult(ok=True)` → tool returns
-`"living_room: off ✅"` → model replies `"הדלקתי את הסלון"` → chat.
+`"living_room: on ✅"` (confirms the requested action) → model replies `"הדלקתי את הסלון"` → chat.
 
 ## Error handling
 
