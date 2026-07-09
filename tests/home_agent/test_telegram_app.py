@@ -15,3 +15,25 @@ def test_build_application_registers_one_text_handler(tmp_path, make_fake_client
                             conversation=Conversation(str(tmp_path / "m.db")))
     assert isinstance(app, Application)
     assert sum(len(hs) for hs in app.handlers.values()) == 1  # exactly one message handler, no network
+    assert app.error_handlers  # a last-resort error handler is registered
+
+
+def test_split_for_telegram_chunks_oversized_text():
+    from home_agent.telegram_app import _split_for_telegram, _TELEGRAM_MAX_CHARS
+    text = "x" * (_TELEGRAM_MAX_CHARS * 2 + 5)
+    chunks = _split_for_telegram(text)
+    assert len(chunks) == 3
+    assert all(len(c) <= _TELEGRAM_MAX_CHARS for c in chunks)
+    assert "".join(chunks) == text  # no bytes lost when there is nothing to split on
+
+
+def test_split_for_telegram_prefers_newline_boundary():
+    from home_agent.telegram_app import _split_for_telegram
+    text = "a" * 4000 + "\n" + "b" * 200
+    chunks = _split_for_telegram(text)
+    assert chunks == ["a" * 4000, "b" * 200]  # split at the newline, not mid-line
+
+
+def test_split_for_telegram_short_text_is_single_chunk():
+    from home_agent.telegram_app import _split_for_telegram
+    assert _split_for_telegram("שלום") == ["שלום"]

@@ -59,3 +59,13 @@ def test_agent_error_returns_friendly_message_and_does_not_persist(tmp_path):
     assert isinstance(reply, str) and reply.strip()
     assert reply != "hi"
     assert conv.load(1) == []  # nothing persisted on failure
+
+
+def test_empty_agent_reply_returns_fallback_and_is_not_persisted(tmp_path, make_fake_client):
+    # Regression: an empty completion used to make the bot go silent while still writing an
+    # empty assistant row that polluted the next turn's context.
+    client = make_fake_client([{"content": ""}])  # model yields empty text, no tool calls
+    conv = Conversation(str(tmp_path / "m.db"))
+    reply = handle_message(1, "hi", config=_cfg(tmp_path, {1}), conversation=conv, client=client)
+    assert reply and reply.strip()  # user gets a real message, not silence
+    assert conv.load(1) == []       # empty turn not persisted

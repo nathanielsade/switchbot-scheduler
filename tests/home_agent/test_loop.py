@@ -47,3 +47,16 @@ def test_loop_stops_at_max_steps(make_fake_client):
                      tools=DEFAULT_TOOLS, max_steps=3)
     assert "exceeded" in reply.lower()
     assert len(client._calls) == 3  # stopped exactly at the cap, no runaway
+
+
+def test_final_step_withholds_tools_to_force_text_answer(make_fake_client):
+    from home_agent.tools import DEFAULT_TOOLS
+    # model keeps requesting tools; the final allowed step must stop offering them so a real
+    # model is forced to answer in text instead of us discarding an uncompleted tool call.
+    script = [{"tool_calls": [{"id": f"c{i}", "name": "get_current_time", "arguments": {}}]}
+              for i in range(3)]
+    client = make_fake_client(script)
+    run_turn("loop", [], client=client, model="gpt-4o", system="S",
+             tools=DEFAULT_TOOLS, max_steps=3)
+    assert "tools" in client._calls[0]        # tools offered on early steps
+    assert "tools" not in client._calls[-1]   # withheld on the final step

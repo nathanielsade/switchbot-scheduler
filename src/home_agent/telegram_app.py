@@ -12,6 +12,23 @@ log = logging.getLogger("home_agent")
 
 _ERROR_REPLY = "מצטער, נתקלתי בתקלה רגעית. נסו שוב עוד רגע."  # "sorry, momentary glitch, try again"
 
+_TELEGRAM_MAX_CHARS = 4096  # a single sendMessage may not exceed this
+
+
+def _split_for_telegram(text, limit=_TELEGRAM_MAX_CHARS):
+    """Split a reply into Telegram-sized chunks, preferring newline boundaries.
+    A single reply over 4096 chars would otherwise be rejected with BadRequest."""
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        cut = remaining.rfind("\n", 0, limit)
+        if cut <= 0:  # no newline to split on within the window
+            cut = limit
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    chunks.append(remaining)
+    return chunks
+
 
 def handle_message(chat_id, text, *, config, conversation, client,
                    tools=DEFAULT_TOOLS, system=FAMILY_SYSTEM_PROMPT, model=None):
@@ -33,6 +50,11 @@ def handle_message(chat_id, text, *, config, conversation, client,
     except Exception:
         log.exception("agent error for chat_id=%s", chat_id)
         return _ERROR_REPLY
+    if not reply or not reply.strip():
+        # An empty completion is a soft failure: reply with the fallback rather than going
+        # silent, and do NOT persist an empty assistant turn that would pollute future context.
+        log.warning("agent produced an empty reply for chat_id=%s", chat_id)
+        return _ERROR_REPLY
     conversation.append(chat_id, "user", text)
     conversation.append(chat_id, "assistant", reply)
     return reply
@@ -43,7 +65,9 @@ def build_application(config, *, client=None, conversation=None):
     (no network is touched until .run_polling())."""
     if client is None:
         from openai import OpenAI
-        client = OpenAI(api_key=config.openai_api_key)
+        # Cap a hung request at config.openai_timeout instead of the SDK's 600s default, so a
+        # stalled OpenAI call can't freeze the (sequentially-dispatched) bot for minutes.
+        client = OpenAI(api_key=config.openai_api_key, timeout=config.openai_timeout)
     if conversation is None:
         conversation = Conversation(config.db_path)
     app = Application.builder().token(config.telegram_bot_token).build()
@@ -57,7 +81,13 @@ def build_application(config, *, client=None, conversation=None):
             handle_message, chat_id, message.text or "",
             config=config, conversation=conversation, client=client)
         if reply:
-            await message.reply_text(reply)
+            for chunk in _split_for_telegram(reply):
+                await message.reply_text(chunk)
+
+    async def on_error(update, context):
+        # Last-resort net so a failed send / handler error is logged, not swallowed silently.
+        log.exception("unhandled error in Telegram handler", exc_info=context.error)
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    app.add_error_handler(on_error)
     return app

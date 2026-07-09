@@ -8,9 +8,11 @@ def run_turn(user_text, history, *, client, model, system, tools, max_steps=10):
     schemas = [t.schema for t in tools]
     messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": user_text}]
     msg = None
-    for _ in range(max_steps):
+    for step in range(max_steps):
         kwargs = {"model": model, "messages": messages}
-        if schemas:
+        # On the final allowed step, stop offering tools so the model must answer in text
+        # instead of requesting another (uncompleted) tool call that we'd discard.
+        if schemas and step < max_steps - 1:
             kwargs["tools"] = schemas
         resp = client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
