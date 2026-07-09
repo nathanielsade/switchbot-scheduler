@@ -25,3 +25,18 @@ class Conversation:
             (chat_id, limit),
         ).fetchall()
         return [{"role": r, "content": c} for r, c in reversed(rows)]
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def __enter__(self) -> "Conversation":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.conn.close()
+        except Exception:
+            pass

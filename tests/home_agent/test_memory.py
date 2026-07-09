@@ -22,3 +22,11 @@ def test_load_limit_keeps_most_recent_in_order(tmp_path):
     for i in range(5):
         c.append(1, "user", f"m{i}")
     assert [m["content"] for m in c.load(1, limit=2)] == ["m3", "m4"]
+
+
+def test_context_manager_closes_and_data_persists(tmp_path):
+    path = str(tmp_path / "m.db")
+    with Conversation(path) as c:
+        c.append(1, "user", "kept")
+    # connection closed on exit; data durable in the file
+    assert Conversation(path).load(1) == [{"role": "user", "content": "kept"}]
