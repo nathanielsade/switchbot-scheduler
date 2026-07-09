@@ -95,10 +95,10 @@ The brain transplant + interface. **Build order step 1.**
 **Build order step 3.**
 - [ ] Shared **calendar** (Google Calendar API): "what do we have this week?"
 - [ ] **Reminders**: "remind us tomorrow evening to pay arnona" → `schedule_task` → Telegram message at time T.
-- [ ] **Smart shopping list** (SQLite, shared): add/remove in chat; both see the same list.
-  - [ ] Every purchased item stored **with a date** → learn purchase cycles ("milk every ~5 days").
-  - [ ] On shopping day, propose a list from history ("probably out of: milk, eggs, bread").
-  - [ ] **Receipt photos** → OpenAI **vision** reads them, updates what was bought + cost.
+- 🟡 **Smart shopping list** (SQLite, shared) — designed as one spec, built in 3 phases. Spec: `docs/superpowers/specs/2026-07-09-smart-shopping-list-design.md`.
+  - ✅ **Phase 1 SHIPPED 2026-07-09** (merged to main, 163 tests): shared add/remove/show/mark-bought via in-process tools over an append-only `items`/`list`/`purchases` SQLite store; canonicalization done by the agent (`known_items`). Plan: `docs/superpowers/plans/2026-07-09-shopping-list-phase-1.md`. (Live Telegram smoke test still pending.)
+  - [ ] **Phase 2** — learn purchase cycles ("milk every ~5 days"); `suggest_restock`/`purchase_history` (deterministic median-gap math, agent reasons). NOTE: dedupe same-day purchases so double mark_bought doesn't skew the cadence.
+  - [ ] **Phase 3** — **receipt photos** → OpenAI **vision** → confirm → log full basket + cost. NOTE: clarify price = per-unit.
 
 ## Epic D — schedule_task + shared memory
 **Build order step 4.** (Reminders/scheduling in C depend on `schedule_task`; formalize it here.)
