@@ -126,3 +126,29 @@ def test_schedule_unknown_device(tmp_path):
     tools, _ = _tools(tmp_path, [])
     out = _tool(tools, "schedule_device").impl({"device": "garage", "action": "on", "time": "18:00"})
     assert "unknown device" in out.lower()
+
+
+def test_get_schedule_lists_and_reports_device(tmp_path):
+    writes = []
+    tools, _ = _tools(tmp_path, writes)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    out = _tool(tools, "get_schedule").impl({"device": "פינת אוכל"})
+    assert "dining" in out and "18:00" in out
+
+
+def test_get_schedule_empty(tmp_path):
+    tools, _ = _tools(tmp_path, [])
+    assert "nothing" in _tool(tools, "get_schedule").impl({}).lower()
+
+
+def test_get_schedule_expires_past_one_time(tmp_path):
+    writes = []
+    store = ScheduleStore(str(tmp_path / "s.db"))
+    # a one-time that already fired (fire_at before our frozen now)
+    store.add("dining", "on", "08:00", ["thu"], True, fire_at="2026-07-09T08:00:00+00:00")
+    tools = build_schedule_tools(_registry(), store,
+                                 write_fn=lambda b, a: writes.append((b, a)), now_fn=_thu_1824)
+    out = _tool(tools, "get_schedule").impl({})
+    assert "nothing" in out.lower()                 # expired, not shown
+    assert store.list("dining") == []               # and removed from the record

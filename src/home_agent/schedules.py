@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from switchbot_scheduler.model import DAYS, Event, DeviceSchedule, Schedule
 from switchbot_scheduler.encoder import encode_alarm
 from switchbot_scheduler.validator import validate, ScheduleError
-from switchbot_scheduler.readback import describe_days
+from switchbot_scheduler.readback import describe_days, readback
 
 from .tools import Tool
 
@@ -115,6 +115,37 @@ def _schedule_impl(args, *, registry, store, write_fn, now_fn):
     return f"{name}: {action} at {time_str} ({when}) ✅"
 
 
+_GET_SCHEDULE_SCHEMA = {"type": "function", "function": {
+    "name": "get_schedule",
+    "description": (
+        "List the timers currently programmed (from what I have set). Use when the user asks what's "
+        "scheduled — for one device or all. Reflects what I programmed; timers set outside me (e.g. the "
+        "SwitchBot app) won't appear."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "device": {"type": "string", "description": "One device name/alias; omit for all."},
+    }, "additionalProperties": False},
+}}
+
+
+def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
+    spoken = (args.get("device") or "").strip()
+    device = None
+    if spoken:
+        device = registry.resolve(spoken)
+        if device is None:
+            return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
+    store.remove_expired(now_fn().isoformat())      # drop fired one-time timers from the record
+    rows = store.list(device)
+    if not rows:
+        return "nothing scheduled" if device is None else f"{device}: nothing scheduled"
+    by_dev = {}
+    for r in rows:
+        by_dev.setdefault(r["device"], []).append(
+            Event(r["time"], r["action"], r["days"], r["once"]))
+    return readback(Schedule([DeviceSchedule(d, evs) for d, evs in by_dev.items()]))
+
+
 def _now():
     return datetime.now().astimezone()
 
@@ -125,5 +156,8 @@ def build_schedule_tools(registry, store, *, write_fn=None, now_fn=None):
     return [
         Tool(name="schedule_device", schema=_SCHEDULE_SCHEMA,
              impl=lambda args: _schedule_impl(
+                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
+        Tool(name="get_schedule", schema=_GET_SCHEDULE_SCHEMA,
+             impl=lambda args: _get_schedule_impl(
                  args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
     ]
