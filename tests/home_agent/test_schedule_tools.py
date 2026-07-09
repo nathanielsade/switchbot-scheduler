@@ -152,3 +152,31 @@ def test_get_schedule_expires_past_one_time(tmp_path):
     out = _tool(tools, "get_schedule").impl({})
     assert "nothing" in out.lower()                 # expired, not shown
     assert store.list("dining") == []               # and removed from the record
+
+
+def test_cancel_all_clears_the_bot(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל"})
+    assert "dining" in out
+    assert store.list("dining") == []
+    assert writes[-1] == ("ID3", [])                # empty write clears the Bot
+
+
+def test_cancel_one_by_time_keeps_the_rest(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes)
+    st = _tool(tools, "schedule_device")
+    st.impl({"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    st.impl({"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"]})
+    _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל", "time": "18:00"})
+    assert [r["time"] for r in store.list("dining")] == ["23:00"]
+    assert len(writes[-1][1]) == 1                  # rewrote the remaining one
+
+
+def test_cancel_nothing_matched(tmp_path):
+    tools, _ = _tools(tmp_path, [])
+    out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל", "time": "09:00"})
+    assert "nothing" in out.lower()

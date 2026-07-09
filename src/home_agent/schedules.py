@@ -128,6 +128,19 @@ _GET_SCHEDULE_SCHEMA = {"type": "function", "function": {
 }}
 
 
+_CANCEL_SCHEMA = {"type": "function", "function": {
+    "name": "cancel_schedule",
+    "description": (
+        "Cancel scheduled timers. Give a device to clear all its timers, or a device + time to cancel "
+        "just that one. Reprograms the device so the cancelled timer no longer fires."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "device": {"type": "string", "description": "Device name or alias."},
+        "time": {"type": "string", "description": "24-hour \"HH:MM\" to cancel one timer; omit to clear all for the device."},
+    }, "required": ["device"], "additionalProperties": False},
+}}
+
+
 def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
     spoken = (args.get("device") or "").strip()
     device = None
@@ -146,6 +159,22 @@ def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
     return readback(Schedule([DeviceSchedule(d, evs) for d, evs in by_dev.items()]))
 
 
+def _cancel_impl(args, *, registry, store, write_fn, now_fn):
+    spoken = (args.get("device") or "").strip()
+    time_str = (args.get("time") or "").strip() or None
+    name = registry.resolve(spoken)
+    if name is None:
+        return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
+    removed = store.remove(name, time_str)
+    if removed == 0:
+        return f"nothing scheduled matched for {name}."
+    try:
+        _program_device(name, store, registry, write_fn)
+    except Exception as e:
+        return f"cancelled in my records, but couldn't reprogram {name} ({e}) — try again."
+    return f"{name}: cancelled {removed} timer(s) ✅"
+
+
 def _now():
     return datetime.now().astimezone()
 
@@ -159,5 +188,8 @@ def build_schedule_tools(registry, store, *, write_fn=None, now_fn=None):
                  args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
         Tool(name="get_schedule", schema=_GET_SCHEDULE_SCHEMA,
              impl=lambda args: _get_schedule_impl(
+                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
+        Tool(name="cancel_schedule", schema=_CANCEL_SCHEMA,
+             impl=lambda args: _cancel_impl(
                  args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
     ]
