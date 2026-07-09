@@ -96,7 +96,7 @@ def _run_battery(ble_id: str) -> int:
             await client.stop_notify(NOTIFY_CHAR)
         if not responses:
             raise RuntimeError("no response from device")
-        return responses[-1][1]  # battery percent (byte index 1; confirm/adjust in Task 6)
+        return responses[-1][1]  # battery percent (byte index 1; confirmed on kitchen Bot 2026-07-09)
 
     return asyncio.run(_read())
 

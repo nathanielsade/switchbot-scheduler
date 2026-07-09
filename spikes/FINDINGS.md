@@ -40,3 +40,8 @@ dining off 22:55 every day -> write_schedule -> dining Bot turned OFF on its own
 - Weekday bit-order inferred (all-days tested); confirm over first week or with a today-only test.
 - Living-room inversion is unit-tested but not yet hardware-verified (dining is non-inverted).
 - The e2e test left a real recurring "dining off 22:55 daily" alarm — clear/overwrite it.
+
+## SwitchBot Bot battery % (home-mcp battery_status) — confirmed 2026-07-09
+Command `0x57 0x02` ("get device basic info") → notify reply. Battery percent is at **reply byte index 1**.
+Verified live on the kitchen Bot (ble_id 0F4665AE-...): reply `[1, 87, 66, 100, 0, 0, 0, 186, 1, 16, 0, 0, 0]`
+→ byte[1]=87, and battery_status reported kitchen=87% in Telegram. Offset assumption in home.py `_run_battery` is correct; no change needed. (Closes Task 6 of the home-mcp plan.)
