@@ -72,6 +72,24 @@ def test_conversation_mixed_immediate_and_schedule():
     assert res.schedule is not None and res.schedule.schedules[0].events[0].time == "22:00"
 
 
+def test_immediate_invalid_action_returns_clarification():
+    canned = lambda s, u: json.dumps({"immediate": [{"device": "living_room", "action": "toggle"}]})
+    res = parse_conversation(["toggle the salon"], _reg(), NOW, completion_fn=canned)
+    assert res.immediate == []
+    assert res.clarification and "toggle" in res.clarification
+
+
+def test_clarification_wins_over_immediate():
+    canned = lambda s, u: json.dumps({
+        "clarification": "Which room?",
+        "immediate": [{"device": "living_room", "action": "on"}],
+    })
+    res = parse_conversation(["turn it on"], _reg(), NOW, completion_fn=canned)
+    assert res.clarification == "Which room?"
+    assert res.immediate == []
+    assert res.schedule is None
+
+
 def test_immediate_prompt_forbids_fabricated_time():
     seen = {}
     def cap(system, user):

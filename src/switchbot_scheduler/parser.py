@@ -4,6 +4,7 @@ from datetime import datetime
 from .model import Schedule, DeviceSchedule, Event, ImmediateAction
 from .registry import Registry
 from .validator import MAX_ALARMS
+from .encoder import ACTION_CODE
 
 MODEL = "gpt-4o-mini"  # small, cheap, supports JSON output; change here to swap models
 
@@ -116,13 +117,25 @@ def parse_conversation(messages, registry, now, completion_fn=_default_completio
     raw = completion_fn(system, convo)
     data = json.loads(raw)
 
+    if data.get("clarification"):
+        return ParseResult(schedule=None, clarification=str(data["clarification"]), immediate=[])
+
     immediate = []
     for a in data.get("immediate", []):
-        canonical = registry.resolve(a["device"])
-        immediate.append(ImmediateAction(device=canonical or a["device"], action=a["action"]))
-
-    if "clarification" in data and "schedules" not in data and "immediate" not in data:
-        return ParseResult(schedule=None, clarification=str(data["clarification"]), immediate=[])
+        device = a["device"]
+        action = a["action"]
+        canonical = registry.resolve(device)
+        resolved_device = canonical or device
+        if action not in ACTION_CODE:
+            return ParseResult(
+                schedule=None,
+                clarification=(
+                    f"I didn't understand the action '{action}' for {resolved_device}. "
+                    "Did you mean on, off, or press?"
+                ),
+                immediate=[],
+            )
+        immediate.append(ImmediateAction(device=resolved_device, action=action))
 
     schedules = []
     for s in data.get("schedules", []):
