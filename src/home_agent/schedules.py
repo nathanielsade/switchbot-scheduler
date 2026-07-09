@@ -172,7 +172,8 @@ def _cancel_impl(args, *, registry, store, write_fn, now_fn):
         for r in removed_rows:   # roll back so the record matches the Bot and a retry re-tries
             store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
         return f"couldn't reprogram {name} ({e}) — timer(s) not cancelled, try again."
-    return f"{name}: cancelled {removed} timer(s) ✅"
+    what = ", ".join(f"{r['action']} at {r['time']}" for r in removed_rows)
+    return f"{name}: cancelled {what} ✅"
 
 
 def _now():

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from telegram.constants import ChatAction
 from telegram.ext import Application, MessageHandler, filters
 
 from .agent import run_turn
@@ -87,9 +88,25 @@ def build_application(config, *, client=None, conversation=None):
         if message is None or update.effective_chat is None:
             return
         chat_id = update.effective_chat.id
-        reply = await asyncio.to_thread(
-            handle_message, chat_id, message.text or "",
-            config=config, conversation=conversation, client=client, tools=tools)
+        chat = update.effective_chat
+
+        async def _keep_typing():
+            # Show "typing…" while the (multi-second) agent turn runs, so the bot never looks stuck.
+            # Telegram clears the indicator after ~5s, so refresh it periodically.
+            try:
+                while True:
+                    await chat.send_action(ChatAction.TYPING)
+                    await asyncio.sleep(4)
+            except asyncio.CancelledError:
+                pass
+
+        typing = asyncio.create_task(_keep_typing())
+        try:
+            reply = await asyncio.to_thread(
+                handle_message, chat_id, message.text or "",
+                config=config, conversation=conversation, client=client, tools=tools)
+        finally:
+            typing.cancel()
         if reply:
             for chunk in _split_for_telegram(reply):
                 await message.reply_text(chunk)

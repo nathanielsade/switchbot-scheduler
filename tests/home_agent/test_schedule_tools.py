@@ -197,3 +197,13 @@ def test_cancel_write_failure_rolls_back(tmp_path):
     out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל"})
     assert "try again" in out.lower() or "not cancelled" in out.lower()
     assert len(store.list("dining")) == 1     # rolled back — record intact so a retry can re-try
+
+
+def test_cancel_names_the_action_and_time_it_cancelled(tmp_path):
+    # Regression: the confirmation used to omit the action, so the model called an "off" timer "on".
+    writes = []
+    tools, _ = _tools(tmp_path, writes)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "off", "time": "20:00", "days": ["mon"]})
+    out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל", "time": "20:00"})
+    assert "off" in out and "20:00" in out    # names the real action + time, not a guess
