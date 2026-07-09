@@ -4,7 +4,8 @@ from home_agent.agent import run_turn
 
 def test_prompt_is_nonempty_and_stable():
     assert FAMILY_SYSTEM_PROMPT.strip()
-    assert FAMILY_SYSTEM_PROMPT == FAMILY_SYSTEM_PROMPT  # constant, no per-call variation
+    assert "Hebrew" in FAMILY_SYSTEM_PROMPT  # stable anchor content
+    assert not any(ch.isdigit() for ch in FAMILY_SYSTEM_PROMPT)  # no timestamps/volatile numbers
 
 
 def test_run_turn_sends_identical_system_prompt_each_turn(make_fake_client):

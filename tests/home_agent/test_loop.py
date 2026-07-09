@@ -35,3 +35,15 @@ def test_loop_returns_tool_error_as_result(make_fake_client):
     assert reply == "handled"
     tool_msg = next(m for m in client._calls[1]["messages"] if m["role"] == "tool")
     assert "kaboom" in tool_msg["content"]
+
+
+def test_loop_stops_at_max_steps(make_fake_client):
+    from home_agent.tools import DEFAULT_TOOLS
+    # every response asks for another tool call → would loop forever unbounded
+    script = [{"tool_calls": [{"id": f"c{i}", "name": "get_current_time", "arguments": {}}]}
+              for i in range(3)]
+    client = make_fake_client(script)
+    reply = run_turn("loop", [], client=client, model="gpt-4o", system="S",
+                     tools=DEFAULT_TOOLS, max_steps=3)
+    assert "exceeded" in reply.lower()
+    assert len(client._calls) == 3  # stopped exactly at the cap, no runaway

@@ -1,13 +1,14 @@
 import json
 
 
-def run_turn(user_text, history, *, client, model, system, tools):
+def run_turn(user_text, history, *, client, model, system, tools, max_steps=10):
     """Run one agentic turn: OpenAI function-calling loop until the model stops calling tools.
     Returns the final assistant text. Tool plumbing stays internal to this turn."""
     tool_by_name = {t.name: t for t in tools}
     schemas = [t.schema for t in tools]
     messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": user_text}]
-    while True:
+    msg = None
+    for _ in range(max_steps):
         kwargs = {"model": model, "messages": messages}
         if schemas:
             kwargs["tools"] = schemas
@@ -31,3 +32,4 @@ def run_turn(user_text, history, *, client, model, system, tools):
             except Exception as e:
                 result = f"error: {e}"
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
+    return (msg.content if msg else None) or "error: exceeded max tool-call steps"
