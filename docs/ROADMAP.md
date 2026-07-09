@@ -102,7 +102,7 @@ The brain transplant + interface. **Build order step 1.**
 
 ## Epic D — schedule_task + shared memory
 **Build order step 4.** (Reminders/scheduling in C depend on `schedule_task`; formalize it here.)
-- 🟡 **Device scheduling SHIPPED 2026-07-09 via ON-DEVICE Bot timers** (no box needed): `schedule_device`/`get_schedule`/`cancel_schedule`, in-process, backed by a SQLite record (source of truth). One-time + recurring, 5-timers/Bot cap, 148 tests. Merged to main; hardware smoke test (fire-with-computer-off) still pending. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-09-scheduling-on-device-timers*`.
+- ✅ **Device scheduling DONE & VERIFIED LIVE 2026-07-09 via ON-DEVICE Bot timers** (no box needed): `schedule_device`/`get_schedule`/`cancel_schedule`, in-process, backed by a SQLite record (source of truth). One-time + recurring, 5-timers/Bot cap, 148 tests. Merged to main. Proven on hardware: a living-room Bot fired from its own timer at the scheduled minute; list + cancel verified against the DB. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-09-scheduling-on-device-timers*`.
 - [ ] `schedule_task(cron, prompt)` tool → writes a cron entry that re-invokes the agent with that prompt (the FULL/flexible path: reminders, messages, "every day at sunset", conditional). Needs the always-on box (Epic 2). Complements the on-device-timer path above.
 - [ ] `remember(fact)` / `recall(question)` over SQLite ("where did we put the passports?").
 
