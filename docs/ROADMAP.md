@@ -14,8 +14,8 @@ Each epic, when reached, gets its own breakdown doc (`docs/epics/`) with its tas
 then a TDD plan at build time. This file is the map; the session todo list tracks the *current* epic.
 
 ## Epic sequence & status  (order = dependency + value, NOT existing code)
-1. ⬜ **Agent core** — Telegram ↔ OpenAI function-calling loop (+ family system prompt + memory). Build first; locally, with one throwaway tool. ← **NEXT** (`docs/epics/epic-1-agent-core.md`)
-2. ⬜ **Infra / home box** — Linux + BlueZ + systemd + re-scan Bots (overlaps #1)
+1. ✅ **Agent core** — Telegram ↔ OpenAI function-calling loop (+ family system prompt + memory). DONE & proven live 2026-07-09; merged + pushed to main (incl. review-hardening 46e4f93). (`docs/epics/epic-1-agent-core.md`)
+2. ⬜ **Infra / home box** — Linux + BlueZ + systemd + re-scan Bots (overlaps #1) ← **NEXT**
 3. ⬜ **home-mcp** — wrap the existing scheduler code
 4. ⬜ **family-mcp** — reminders + shopping + calendar + `schedule_task`/memory
 5. ⬜ **finance-mcp** — Firefly + bank scrapers + weekly summary (read-only)
@@ -74,6 +74,7 @@ Prereq for everything (from earlier sessions: no Mac dependency, wife-friendly).
 - [ ] **Re-scan the Bots on Linux** → device addresses are **MACs**, not the macOS CoreBluetooth UUIDs; update `devices.yaml`. Confirm a real BLE write fires.
 - [ ] Run services (bot + MCP servers) under **systemd** (auto-start on boot, restart on crash); laptop lid-close = no-sleep (`HandleLidSwitch=ignore`).
 - [ ] Secrets: encrypted env file, `chmod 600`, loaded by systemd; rotate the OpenAI/SwitchBot creds that leaked into chat.
+  - ⚠️ **DEFERRED 2026-07-09 (user's explicit call):** credential rotation (OpenAI key + Telegram bot token) and the private family-group lockdown are intentionally postponed for now. Note: the leaked keys stay live until rotated, and a private group does **not** mitigate a leaked bot token / API key (someone with the token can drive the bot without being in the group). Revisit before the box goes 24/7. Related: switch `ALLOWED_CHAT_IDS` from the direct chat (5494778294) to the family-group id via discovery mode.
 
 ## Epic A — Agent core (Telegram ↔ OpenAI function-calling loop)
 The brain transplant + interface. **Build order step 1.**
