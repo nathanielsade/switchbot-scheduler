@@ -5,3 +5,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 secrets.yaml
+# Home-agent runtime data (conversation history)
+*.db
+home_agent.db
