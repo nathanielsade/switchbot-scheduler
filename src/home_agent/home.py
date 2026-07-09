@@ -122,6 +122,16 @@ def _battery_impl(args, *, registry, battery_fn) -> str:
     return "\n".join(lines)
 
 
+def load_home_tools(config) -> list[Tool]:
+    """Build the home tools from config.devices_path. If the file is absent, log a warning and
+    return [] so the bot still runs (time-only) instead of crashing at startup."""
+    path = config.devices_path
+    if not os.path.exists(path):
+        log.warning("devices file not found at %s — home control disabled", path)
+        return []
+    return build_home_tools(Registry.load(path))
+
+
 def build_home_tools(registry, *, actuate_fn=None, battery_fn=None) -> list[Tool]:
     battery_fn = battery_fn or _run_battery
     return [

@@ -74,3 +74,21 @@ def test_battery_status_isolates_a_failure():
     out = _tool(tools, "battery_status").impl({})
     assert "ac: unavailable — timeout" in out
     assert "living_room: 90%" in out    # other devices still reported
+
+
+def test_load_home_tools_missing_file_returns_empty(tmp_path):
+    from home_agent.home import load_home_tools
+    from home_agent.config import Config
+    cfg = Config(openai_api_key="x", telegram_bot_token="t:t", allowed_chat_ids={1},
+                 devices_path=str(tmp_path / "nope.yaml"))
+    assert load_home_tools(cfg) == []
+
+
+def test_load_home_tools_present_file_builds_three(tmp_path):
+    from home_agent.home import load_home_tools
+    from home_agent.config import Config
+    dev = tmp_path / "devices.yaml"
+    dev.write_text("devices:\n  kitchen:\n    aliases: [מטבח]\n    ble_id: ID3\n")
+    cfg = Config(openai_api_key="x", telegram_bot_token="t:t", allowed_chat_ids={1},
+                 devices_path=str(dev))
+    assert {t.name for t in load_home_tools(cfg)} == {"control_device", "list_devices", "battery_status"}

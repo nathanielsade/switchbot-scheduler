@@ -7,7 +7,8 @@ from home_agent.telegram_app import build_application
 def _cfg(tmp_path):
     # token must be BotFather-shaped ("<digits>:<rest>") for python-telegram-bot to accept it
     return Config(openai_api_key="x", telegram_bot_token="123456:ABCdefGHIjklMNOpqrsTUVwxyz012345",
-                  allowed_chat_ids={1}, model="gpt-4o", db_path=str(tmp_path / "m.db"))
+                  allowed_chat_ids={1}, model="gpt-4o", db_path=str(tmp_path / "m.db"),
+                  devices_path=str(tmp_path / "no-devices.yaml"))
 
 
 def test_build_application_registers_one_text_handler(tmp_path, make_fake_client):

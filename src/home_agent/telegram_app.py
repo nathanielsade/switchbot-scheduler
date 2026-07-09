@@ -4,6 +4,7 @@ import logging
 from telegram.ext import Application, MessageHandler, filters
 
 from .agent import run_turn
+from .home import load_home_tools
 from .memory import Conversation
 from .prompts import FAMILY_SYSTEM_PROMPT
 from .tools import DEFAULT_TOOLS
@@ -70,6 +71,7 @@ def build_application(config, *, client=None, conversation=None):
         client = OpenAI(api_key=config.openai_api_key, timeout=config.openai_timeout)
     if conversation is None:
         conversation = Conversation(config.db_path)
+    tools = list(DEFAULT_TOOLS) + load_home_tools(config)
     app = Application.builder().token(config.telegram_bot_token).build()
 
     async def on_message(update, context):
@@ -79,7 +81,7 @@ def build_application(config, *, client=None, conversation=None):
         chat_id = update.effective_chat.id
         reply = await asyncio.to_thread(
             handle_message, chat_id, message.text or "",
-            config=config, conversation=conversation, client=client)
+            config=config, conversation=conversation, client=client, tools=tools)
         if reply:
             for chunk in _split_for_telegram(reply):
                 await message.reply_text(chunk)

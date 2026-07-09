@@ -69,3 +69,22 @@ def test_empty_agent_reply_returns_fallback_and_is_not_persisted(tmp_path, make_
     reply = handle_message(1, "hi", config=_cfg(tmp_path, {1}), conversation=conv, client=client)
     assert reply and reply.strip()  # user gets a real message, not silence
     assert conv.load(1) == []       # empty turn not persisted
+
+
+def test_handle_message_runs_control_device_through_composed_tools(tmp_path, make_fake_client):
+    from home_agent.home import build_home_tools
+    from home_agent.tools import DEFAULT_TOOLS
+    from switchbot_scheduler.registry import Registry, Device
+    reg = Registry([Device(name="kitchen", aliases=["מטבח"], ble_id="ID3")])
+    calls = []
+    tools = list(DEFAULT_TOOLS) + build_home_tools(reg, actuate_fn=lambda b, c: calls.append((b, c)))
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "control_device",
+                         "arguments": {"device": "מטבח", "action": "on"}}]},
+        {"content": "הדלקתי את המטבח"},
+    ])
+    conv = Conversation(str(tmp_path / "m.db"))
+    reply = handle_message(1, "תדליק את המטבח", config=_cfg(tmp_path, {1}),
+                           conversation=conv, client=client, tools=tools)
+    assert calls == [("ID3", 1)]
+    assert reply == "הדלקתי את המטבח"
