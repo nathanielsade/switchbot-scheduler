@@ -84,14 +84,19 @@ def run_immediate(actions, registry) -> list[ActionResult]  # sync wrapper
 
 ### 3. Web (`web/app.py` + `static/index.html`)
 
-- `/parse` response includes `immediate`, `schedules`, `clarification`.
+Real endpoints today are `POST /preview` (parse + read-back) and `POST /apply`
+(write schedule). This feature extends `/preview` and adds `/execute`:
+
+- `/preview` response gains an always-present `immediate` array alongside the
+  existing `kind` (`clarification` | `schedule` | `none`), `readback`, `schedule`.
 - New `POST /execute` — body is the list of immediate actions; runs
   `run_immediate` and returns the per-device `ActionResult`s.
 - Frontend: on send, if `immediate` is non-empty, POST it to `/execute`
   **without any approval** and render one result line per device
-  (`⚡ Turned on kitchen`, `⚠️ garden — out of range`). If `schedules` is
-  non-empty, render the existing **Approve & write** card unchanged. Both can
-  appear for one message.
+  (`⚡ Turned on kitchen`, `⚠️ garden — out of range`). If `kind=="schedule"`,
+  render the existing **Approve & write** card unchanged. Both can appear for
+  one message. Executing immediate actions resets the conversation thread so a
+  "now" action cannot re-fire on the next turn.
 
 ## Error handling
 
