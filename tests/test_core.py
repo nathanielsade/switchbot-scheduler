@@ -57,14 +57,34 @@ import json as _json
 from datetime import datetime as _dt
 from switchbot_scheduler.core import preview_conversation
 
-def test_preview_conversation_schedule(monkeypatch):
+def test_preview_conversation_schedule():
     canned = lambda s, u: _json.dumps({"schedules": [{"device": "living_room",
         "events": [{"time": "09:00", "action": "on", "days": ["mon"], "once": True}]}]})
-    kind, text, sched = preview_conversation(["living room on tomorrow, once"], _reg(),
-                                             _dt(2026, 7, 5, 12, 0), completion_fn=canned)
-    assert kind == "schedule" and "once (mon)" in text and sched is not None
+    res = preview_conversation(["living room on tomorrow, once"], _reg(),
+                               _dt(2026, 7, 5, 12, 0), completion_fn=canned)
+    assert res.clarification is None
+    assert res.schedule is not None and "once (mon)" in res.readback
+    assert res.immediate == []
+
 
 def test_preview_conversation_clarification():
     canned = lambda s, u: _json.dumps({"clarification": "Which device?"})
-    kind, text, sched = preview_conversation(["do it"], _reg(), _dt(2026, 7, 5, 12, 0), completion_fn=canned)
-    assert kind == "clarification" and text == "Which device?" and sched is None
+    res = preview_conversation(["do it"], _reg(), _dt(2026, 7, 5, 12, 0), completion_fn=canned)
+    assert res.clarification == "Which device?" and res.schedule is None and res.immediate == []
+
+
+def test_preview_conversation_immediate_only():
+    canned = lambda s, u: _json.dumps({"immediate": [{"device": "living_room", "action": "on"}]})
+    res = preview_conversation(["salon on now"], _reg(), _dt(2026, 7, 5, 12, 0), completion_fn=canned)
+    assert res.schedule is None and res.readback is None
+    assert len(res.immediate) == 1 and res.immediate[0].action == "on"
+
+
+def test_preview_conversation_mixed():
+    canned = lambda s, u: _json.dumps({
+        "immediate": [{"device": "living_room", "action": "on"}],
+        "schedules": [{"device": "living_room",
+            "events": [{"time": "22:00", "action": "off", "days": ["mon"], "once": False}]}]})
+    res = preview_conversation(["salon on now, off 22:00 mon"], _reg(), _dt(2026, 7, 5, 12, 0), completion_fn=canned)
+    assert len(res.immediate) == 1
+    assert res.schedule is not None and "living_room: off 22:00" in res.readback

@@ -1,8 +1,17 @@
+from dataclasses import dataclass
 from .parser import parse_schedule, parse_conversation
 from .validator import validate
 from .readback import readback
-from .model import Schedule
+from .model import Schedule, ImmediateAction
 from .registry import Registry
+
+
+@dataclass
+class PreviewResult:
+    clarification: str | None
+    schedule: Schedule | None
+    readback: str | None
+    immediate: list[ImmediateAction]
 
 
 def build_schedule(prompt: str, registry: Registry, completion_fn=None) -> Schedule:
@@ -13,15 +22,20 @@ def build_schedule(prompt: str, registry: Registry, completion_fn=None) -> Sched
     return schedule
 
 
-def preview_conversation(messages, registry: Registry, now, completion_fn=None):
+def preview_conversation(messages, registry: Registry, now, completion_fn=None) -> PreviewResult:
     kwargs = {"completion_fn": completion_fn} if completion_fn is not None else {}
     result = parse_conversation(messages, registry, now, **kwargs)
     if result.clarification is not None:
-        return ("clarification", result.clarification, None)
+        return PreviewResult(clarification=result.clarification, schedule=None,
+                             readback=None, immediate=[])
     schedule = result.schedule
-    validate(schedule, registry)
-    _apply_press_mode(schedule, registry)
-    return ("schedule", readback(schedule), schedule)
+    if schedule is not None and schedule.schedules:
+        validate(schedule, registry)
+        _apply_press_mode(schedule, registry)
+        return PreviewResult(clarification=None, schedule=schedule,
+                             readback=readback(schedule), immediate=result.immediate)
+    return PreviewResult(clarification=None, schedule=None, readback=None,
+                         immediate=result.immediate)
 
 
 def _apply_press_mode(schedule: Schedule, registry: Registry) -> None:
