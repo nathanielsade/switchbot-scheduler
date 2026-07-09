@@ -14,6 +14,12 @@ class Event:
 
 
 @dataclass
+class ImmediateAction:
+    device: str        # canonical device name
+    action: Action     # "on" | "off" | "press"
+
+
+@dataclass
 class DeviceSchedule:
     device: str            # canonical device name
     events: list[Event]

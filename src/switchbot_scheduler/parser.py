@@ -1,7 +1,7 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from .model import Schedule, DeviceSchedule, Event
+from .model import Schedule, DeviceSchedule, Event, ImmediateAction
 from .registry import Registry
 from .validator import MAX_ALARMS
 
@@ -68,6 +68,7 @@ def parse_schedule(prompt: str, registry: Registry, completion_fn=_default_compl
 class ParseResult:
     schedule: Schedule | None
     clarification: str | None
+    immediate: list[ImmediateAction] = field(default_factory=list)
 
 
 def build_conversation_system_prompt(registry: Registry, now: datetime) -> str:
@@ -82,23 +83,28 @@ def build_conversation_system_prompt(registry: Registry, now: datetime) -> str:
     return f"""You convert a conversation about device schedules (Hebrew or English) into strict JSON.
 Today is {today}.
 
-Output EXACTLY ONE of:
-  {{"schedules": [{{"device": <name>, "events": [
-     {{"time": "HH:MM", "action": "on"|"off"|"press", "days": [<weekdays>], "once": <bool>}} ]}} ]}}
-  {{"clarification": "<a short question or explanation>"}}
+Output JSON with any of these keys (omit a key when it does not apply):
+  "immediate": [{{"device": <name>, "action": "on"|"off"|"press"}}]        # act right now, NO time
+  "schedules": [{{"device": <name>, "events": [
+     {{"time": "HH:MM", "action": "on"|"off"|"press", "days": [<weekdays>], "once": <bool>}} ]}} ]
+  "clarification": "<a short question or explanation>"                       # use alone, when unsure
 
 Known device names (map spoken names/aliases to exactly one of these):
 {names}
 
 Rules:
+- "now"/"עכשיו"/"right now"/"straight away", or an act-now verb with no future time,
+  means IMMEDIATE: put it in "immediate" (no time). NEVER invent a time and NEVER emit a
+  00:00 schedule for a "now" request.
 - weekdays are lowercase 3-letter codes: sun mon tue wed thu fri sat. Use 24-hour zero-padded time.
 - Every turn-ON and every turn-OFF is its OWN event. Each device supports at most {MAX_ALARMS} events.
 - Recurring: "every day"/no day -> all 7 days, once=false. Named weekdays repeating -> those days, once=false.
 - One-time: "today"/"tomorrow"/"this <weekday>" -> set days to that single weekday and once=true.
   Resolve relative days using today's date above.
 - NEVER output "every day" when the user implied a specific or one-time day.
+- A single message may contain BOTH immediate actions and schedules — output both keys.
 - If the request is ambiguous, unparseable, or asks for a specific calendar date more than 7 days away
-  (which the device cannot do), return a "clarification" explaining/asking — do NOT guess a schedule.
+  (which the device cannot do), return ONLY "clarification" — do NOT guess a schedule.
 - The conversation is a list of user turns, newest reflecting corrections. Output the CURRENT complete
   intended schedule reflecting the WHOLE conversation.
 """
@@ -109,14 +115,22 @@ def parse_conversation(messages, registry, now, completion_fn=_default_completio
     convo = "\n".join(f"[{i+1}] {m}" for i, m in enumerate(messages))
     raw = completion_fn(system, convo)
     data = json.loads(raw)
-    if "clarification" in data and "schedules" not in data:
-        return ParseResult(schedule=None, clarification=str(data["clarification"]))
+
+    immediate = []
+    for a in data.get("immediate", []):
+        canonical = registry.resolve(a["device"])
+        immediate.append(ImmediateAction(device=canonical or a["device"], action=a["action"]))
+
+    if "clarification" in data and "schedules" not in data and "immediate" not in data:
+        return ParseResult(schedule=None, clarification=str(data["clarification"]), immediate=[])
+
     schedules = []
-    for s in data["schedules"]:
+    for s in data.get("schedules", []):
         raw_device = s["device"]
         canonical = registry.resolve(raw_device)
         device = canonical if canonical is not None else raw_device
         events = [Event(time=e["time"], action=e["action"], days=e["days"], once=bool(e.get("once", False)))
                   for e in s["events"]]
         schedules.append(DeviceSchedule(device=device, events=events))
-    return ParseResult(schedule=Schedule(schedules=schedules), clarification=None)
+    schedule = Schedule(schedules=schedules) if schedules else None
+    return ParseResult(schedule=schedule, clarification=None, immediate=immediate)

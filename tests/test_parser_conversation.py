@@ -44,3 +44,39 @@ def test_system_prompt_includes_today():
         return json.dumps({"clarification": "?"})
     parse_conversation(["hi"], _reg(), NOW, completion_fn=cap)
     assert "2026-07-05" in seen["system"] and "Sunday" in seen["system"]
+
+
+def test_conversation_emits_immediate_now():
+    canned = lambda s, u: json.dumps({"immediate": [{"device": "living_room", "action": "on"}]})
+    res = parse_conversation(["turn on the salon now"], _reg(), NOW, completion_fn=canned)
+    assert res.schedule is None
+    assert res.clarification is None
+    assert len(res.immediate) == 1
+    assert res.immediate[0].device == "living_room" and res.immediate[0].action == "on"
+
+
+def test_conversation_resolves_immediate_alias():
+    canned = lambda s, u: json.dumps({"immediate": [{"device": "סלון", "action": "off"}]})
+    res = parse_conversation(["כבה את הסלון עכשיו"], _reg(), NOW, completion_fn=canned)
+    assert res.immediate[0].device == "living_room"  # alias resolved to canonical
+
+
+def test_conversation_mixed_immediate_and_schedule():
+    canned = lambda s, u: json.dumps({
+        "immediate": [{"device": "living_room", "action": "on"}],
+        "schedules": [{"device": "living_room",
+            "events": [{"time": "22:00", "action": "off", "days": ["mon"], "once": False}]}],
+    })
+    res = parse_conversation(["salon on now and off at 22:00 mondays"], _reg(), NOW, completion_fn=canned)
+    assert len(res.immediate) == 1 and res.immediate[0].action == "on"
+    assert res.schedule is not None and res.schedule.schedules[0].events[0].time == "22:00"
+
+
+def test_immediate_prompt_forbids_fabricated_time():
+    seen = {}
+    def cap(system, user):
+        seen["system"] = system
+        return json.dumps({"immediate": [{"device": "living_room", "action": "on"}]})
+    parse_conversation(["now"], _reg(), NOW, completion_fn=cap)
+    assert "immediate" in seen["system"]
+    assert "never" in seen["system"].lower()  # the "never invent a time" rule is present
