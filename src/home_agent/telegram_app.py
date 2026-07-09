@@ -1,8 +1,11 @@
+import asyncio
 import logging
 
 from .agent import run_turn
 from .prompts import FAMILY_SYSTEM_PROMPT
 from .tools import DEFAULT_TOOLS
+from telegram.ext import Application, MessageHandler, filters
+from .memory import Conversation
 
 log = logging.getLogger("home_agent")
 
@@ -32,3 +35,28 @@ def handle_message(chat_id, text, *, config, conversation, client,
     conversation.append(chat_id, "user", text)
     conversation.append(chat_id, "assistant", reply)
     return reply
+
+
+def build_application(config, *, client=None, conversation=None):
+    """Build the long-poll Telegram Application. Injectable client/conversation for tests
+    (no network is touched until .run_polling())."""
+    if client is None:
+        from openai import OpenAI
+        client = OpenAI(api_key=config.openai_api_key)
+    if conversation is None:
+        conversation = Conversation(config.db_path)
+    app = Application.builder().token(config.telegram_bot_token).build()
+
+    async def on_message(update, context):
+        message = update.effective_message
+        if message is None or update.effective_chat is None:
+            return
+        chat_id = update.effective_chat.id
+        reply = await asyncio.to_thread(
+            handle_message, chat_id, message.text or "",
+            config=config, conversation=conversation, client=client)
+        if reply:
+            await message.reply_text(reply)
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    return app
