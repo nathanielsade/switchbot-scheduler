@@ -1,4 +1,3 @@
-import logging
 from datetime import datetime, timedelta
 
 from switchbot_scheduler.model import DAYS, Event, DeviceSchedule, Schedule
@@ -7,8 +6,6 @@ from switchbot_scheduler.validator import validate, ScheduleError
 from switchbot_scheduler.readback import describe_days, readback
 
 from .tools import Tool
-
-log = logging.getLogger("home_agent")
 
 _DAY_WORDS = {
     "daily": list(DAYS),
@@ -165,13 +162,16 @@ def _cancel_impl(args, *, registry, store, write_fn, now_fn):
     name = registry.resolve(spoken)
     if name is None:
         return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
+    removed_rows = [r for r in store.list(name) if time_str is None or r["time"] == time_str]
     removed = store.remove(name, time_str)
     if removed == 0:
         return f"nothing scheduled matched for {name}."
     try:
         _program_device(name, store, registry, write_fn)
     except Exception as e:
-        return f"cancelled in my records, but couldn't reprogram {name} ({e}) — try again."
+        for r in removed_rows:   # roll back so the record matches the Bot and a retry re-tries
+            store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
+        return f"couldn't reprogram {name} ({e}) — timer(s) not cancelled, try again."
     return f"{name}: cancelled {removed} timer(s) ✅"
 
 

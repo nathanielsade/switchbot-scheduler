@@ -180,3 +180,20 @@ def test_cancel_nothing_matched(tmp_path):
     tools, _ = _tools(tmp_path, [])
     out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל", "time": "09:00"})
     assert "nothing" in out.lower()
+
+
+def test_cancel_write_failure_rolls_back(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.db"))
+    n = {"c": 0}
+
+    def flaky(ble_id, alarms):
+        n["c"] += 1
+        if n["c"] == 2:            # 1st write (the schedule) ok; 2nd (the cancel) fails
+            raise RuntimeError("out of range")
+
+    tools = build_schedule_tools(_registry(), store, write_fn=flaky, now_fn=_thu_1824)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל"})
+    assert "try again" in out.lower() or "not cancelled" in out.lower()
+    assert len(store.list("dining")) == 1     # rolled back — record intact so a retry can re-try
