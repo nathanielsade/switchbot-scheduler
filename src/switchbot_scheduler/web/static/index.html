@@ -45,7 +45,7 @@
 </head>
 <body>
 <header>SwitchBot Scheduler
-  <small>Type a schedule in Hebrew or English — you'll approve before anything is written.</small>
+  <small>Type a schedule in Hebrew or English — 'now' acts immediately, schedules need your approval.</small>
   <button id="newbtn" type="button" style="float:right;font-size:13px;padding:6px 12px">New</button>
 </header>
 <div id="log"></div>
@@ -94,6 +94,22 @@ function scheduleCard(readback, schedule){
   };
 }
 
+async function runImmediate(actions){
+  try{
+    const r=await fetch('/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actions})});
+    const data=await r.json();
+    if(!data.ok){ bubble('⚠️ '+data.error,'bot','err'); return; }
+    data.results.forEach(res=>{
+      if(res.ok){
+        const verb = res.action==='on' ? 'Turned on' : res.action==='off' ? 'Turned off' : 'Pressed';
+        bubble('⚡ '+verb+' '+res.device,'bot','ok');
+      } else {
+        bubble('⚠️ '+res.device+' — '+res.error,'bot','err');
+      }
+    });
+  }catch(err){ bubble('⚠️ '+err,'bot','err'); }
+}
+
 newbtn.onclick=()=>{ thread=[]; lastSchedule=null; log.innerHTML=''; input.focus(); };
 
 form.onsubmit=async(e)=>{
@@ -106,7 +122,13 @@ form.onsubmit=async(e)=>{
     const data=await r.json(); thinking.remove();
     if(!data.ok){ bubble('⚠️ '+data.error,'bot','err'); }
     else if(data.kind==='clarification'){ bubble(data.message,'bot'); }
-    else { scheduleCard(data.readback, data.schedule); }
+    else {
+      if(data.immediate && data.immediate.length){
+        await runImmediate(data.immediate);
+        thread=[];   // immediate intent is one-shot — clear the thread so it can't re-fire next turn
+      }
+      if(data.kind==='schedule'){ scheduleCard(data.readback, data.schedule); }
+    }
   }catch(err){ thinking.remove(); bubble('⚠️ '+err,'bot','err'); }
 };
 </script>
