@@ -385,6 +385,14 @@ FAMILY_SYSTEM_PROMPT = (
 - **1.7 — `home-agent` entry point + live e2e** (console script; text the bot; "what time is it?" fires the tool; memory carries).
 We build 1.1–1.5 now (offline, fully unit-tested), then pause for @BotFather.
 
+### Carry-forward from the whole-branch review (address during 1.6/1.7)
+- **Memory sequencing (1.6, important):** `run_turn` does NOT persist — the caller owns memory. Correct order: `history = memory.load(chat_id)` **before** appending the incoming message → `run_turn(user_text, history, …)` → then `memory.append(chat_id,"user",user_text)` and `memory.append(chat_id,"assistant",reply)`. Appending the user turn *before* loading history duplicates it.
+- **`.env.example` (1.6):** add the agent vars — `TELEGRAM_BOT_TOKEN`, `ALLOWED_CHAT_IDS`, `HOME_AGENT_MODEL`, `HOME_AGENT_DB` (portability: a Linux clone needs the template).
+- **DB path (1.7):** `db_path` defaults to `home_agent.db` (relative to CWD). Pin it to an absolute/service-relative path in the entry point so an always-on service started from any dir uses one DB.
+- **Time tool (nice-to-have):** `get_current_time` returns naive local wall-clock; consider a timezone-labelled string once the Linux host TZ is fixed.
+- **`allowed_chat_ids` parsing:** `int(x)` raises `ValueError` on malformed `.env` (fail-fast at startup) — fine, just expect it when the family edits `.env` by hand.
+- **Done in core:** tool-call loop is bounded (`run_turn(..., max_steps=10)`); unknown-tool and tool-exception paths already degrade to `error: …` results rather than crashing.
+
 ---
 
 ## Self-Review
