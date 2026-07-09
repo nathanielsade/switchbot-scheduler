@@ -35,6 +35,20 @@ _CONTROL_SCHEMA = {"type": "function", "function": {
     }, "required": ["device", "action"], "additionalProperties": False},
 }}
 
+_BATTERY_SCHEMA = {"type": "function", "function": {
+    "name": "battery_status",
+    "description": (
+        "Report SwitchBot device battery levels. Use when the user asks about battery or whether a "
+        "device is running low. Pass one device name/alias to check just that one; omit to check all. "
+        "Returns each device's battery percent, or an error if a Bot couldn't be reached."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "device": {"type": "string", "description": "One device name/alias; omit to check all."},
+    }, "additionalProperties": False},
+}}
+
+_CMD_INFO = 0x02  # 0x57 0x02: "get device basic info"; response carries battery %
+
 
 def _device_type(device) -> str:
     if device.mode == "press":
@@ -66,10 +80,55 @@ def _control_impl(args, *, registry, actuate_fn) -> str:
     return f"{result.device}: failed — {result.error}"
 
 
+def _run_battery(ble_id: str) -> int:
+    """Real BLE battery read (production). Battery byte offset confirmed by the Task 6 spike."""
+    import asyncio
+    from switchbot_scheduler.actuator import WRITE_CHAR, NOTIFY_CHAR, MAGIC
+
+    async def _read() -> int:
+        from bleak import BleakClient
+        responses: list[bytes] = []
+        async with BleakClient(ble_id) as client:
+            await client.start_notify(NOTIFY_CHAR, lambda _, d: responses.append(bytes(d)))
+            await client.write_gatt_char(WRITE_CHAR, bytes([MAGIC, _CMD_INFO]), response=True)
+            await asyncio.sleep(1.0)
+            await client.stop_notify(NOTIFY_CHAR)
+        if not responses:
+            raise RuntimeError("no response from device")
+        return responses[-1][1]  # battery percent (byte index 1; confirm/adjust in Task 6)
+
+    return asyncio.run(_read())
+
+
+def _battery_impl(args, *, registry, battery_fn) -> str:
+    spoken = (args.get("device") or "").strip()
+    if spoken:
+        name = registry.resolve(spoken)
+        if name is None:
+            return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
+        targets = [name]
+    else:
+        targets = registry.known_names()
+    lines = []
+    for name in targets:
+        ble_id = registry.ble_id(name)
+        if not ble_id:
+            lines.append(f"{name}: unavailable — no ble_id")
+            continue
+        try:
+            lines.append(f"{name}: {battery_fn(ble_id)}%")
+        except Exception as e:
+            lines.append(f"{name}: unavailable — {e}")
+    return "\n".join(lines)
+
+
 def build_home_tools(registry, *, actuate_fn=None, battery_fn=None) -> list[Tool]:
+    battery_fn = battery_fn or _run_battery
     return [
         Tool(name="control_device", schema=_CONTROL_SCHEMA,
              impl=lambda args: _control_impl(args, registry=registry, actuate_fn=actuate_fn)),
         Tool(name="list_devices", schema=_LIST_SCHEMA,
              impl=lambda args: _list_impl(args, registry=registry)),
+        Tool(name="battery_status", schema=_BATTERY_SCHEMA,
+             impl=lambda args: _battery_impl(args, registry=registry, battery_fn=battery_fn)),
     ]

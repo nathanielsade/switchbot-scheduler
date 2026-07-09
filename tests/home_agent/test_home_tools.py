@@ -49,3 +49,28 @@ def test_control_device_unknown_device_is_friendly():
     out = _tool(build_home_tools(_registry()), "control_device").impl({"device": "garage", "action": "on"})
     assert "unknown device" in out.lower()
     assert "kitchen" in out             # lists known devices
+
+
+def test_battery_status_all_devices():
+    tools = build_home_tools(_registry(), battery_fn=lambda b: {"ID1": 88, "ID2": 40, "ID3": 15}[b])
+    out = _tool(tools, "battery_status").impl({})
+    assert "living_room: 88%" in out
+    assert "ac: 40%" in out
+    assert "kitchen: 15%" in out
+
+
+def test_battery_status_single_device():
+    tools = build_home_tools(_registry(), battery_fn=lambda b: 55)
+    out = _tool(tools, "battery_status").impl({"device": "מטבח"})
+    assert out.strip() == "kitchen: 55%"
+
+
+def test_battery_status_isolates_a_failure():
+    def bf(ble_id):
+        if ble_id == "ID2":
+            raise RuntimeError("timeout")
+        return 90
+    tools = build_home_tools(_registry(), battery_fn=bf)
+    out = _tool(tools, "battery_status").impl({})
+    assert "ac: unavailable — timeout" in out
+    assert "living_room: 90%" in out    # other devices still reported
