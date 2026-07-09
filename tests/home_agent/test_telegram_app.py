@@ -62,3 +62,24 @@ def test_build_application_composes_schedule_tools(tmp_path, monkeypatch, make_f
     assert isinstance(app, Application)
     assert seen.get("registry") is not None            # composed with the loaded registry
     assert isinstance(seen["store"], ScheduleStore)     # and a ScheduleStore
+
+
+def test_build_application_composes_shopping_tools(tmp_path, monkeypatch, make_fake_client):
+    import home_agent.telegram_app as ta
+    from home_agent.config import Config
+    from home_agent.shopping_store import ShoppingStore
+    cfg = Config(openai_api_key="x", telegram_bot_token="123456:ABCdefGHIjklMNOpqrsTUVwxyz012345",
+                 allowed_chat_ids={1}, db_path=str(tmp_path / "m.db"),
+                 devices_path=str(tmp_path / "none.yaml"))
+    seen = {}
+    real = ta.build_shopping_tools
+
+    def spy(store, **kw):
+        seen["store"] = store
+        return real(store, **kw)
+
+    monkeypatch.setattr(ta, "build_shopping_tools", spy)
+    app = build_application(cfg, client=make_fake_client([]),
+                            conversation=Conversation(str(tmp_path / "m.db")))
+    assert isinstance(app, Application)
+    assert isinstance(seen.get("store"), ShoppingStore)   # shopping tools were composed

@@ -110,3 +110,20 @@ def test_handle_message_runs_schedule_device_through_composed_tools(tmp_path, ma
                            conversation=conv, client=client, tools=tools)
     assert writes and writes[-1][0] == "ID3"
     assert reply == "קבעתי"
+
+
+def test_handle_message_runs_add_to_list_through_composed_tools(tmp_path, make_fake_client):
+    from home_agent.shopping import build_shopping_tools
+    from home_agent.shopping_store import ShoppingStore
+    from home_agent.tools import DEFAULT_TOOLS
+    store = ShoppingStore(str(tmp_path / "sh.db"))
+    tools = list(DEFAULT_TOOLS) + build_shopping_tools(store)
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "add_to_list", "arguments": {"item": "חלב"}}]},
+        {"content": "הוספתי חלב"},
+    ])
+    conv = Conversation(str(tmp_path / "m.db"))
+    reply = handle_message(1, "תוסיף חלב", config=_cfg(tmp_path, {1}),
+                           conversation=conv, client=client, tools=tools)
+    assert reply == "הוספתי חלב"
+    assert store.pending()[0]["item"] == "חלב"

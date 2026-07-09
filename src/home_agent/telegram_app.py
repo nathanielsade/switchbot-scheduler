@@ -10,6 +10,8 @@ from .memory import Conversation
 from .prompts import FAMILY_SYSTEM_PROMPT
 from .schedule_store import ScheduleStore
 from .schedules import build_schedule_tools
+from .shopping import build_shopping_tools
+from .shopping_store import ShoppingStore
 from .tools import DEFAULT_TOOLS
 
 log = logging.getLogger("home_agent")
@@ -76,6 +78,7 @@ def build_application(config, *, client=None, conversation=None):
         conversation = Conversation(config.db_path)
     registry = load_registry(config)
     tools = list(DEFAULT_TOOLS)
+    tools += build_shopping_tools(ShoppingStore(config.db_path))
     if registry is not None:
         tools += build_home_tools(registry)
         tools += build_schedule_tools(registry, ScheduleStore(config.db_path))
