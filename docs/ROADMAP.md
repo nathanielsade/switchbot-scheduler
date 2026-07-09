@@ -16,7 +16,7 @@ then a TDD plan at build time. This file is the map; the session todo list track
 ## Epic sequence & status  (order = dependency + value, NOT existing code)
 1. ✅ **Agent core** — Telegram ↔ OpenAI function-calling loop (+ family system prompt + memory). DONE & proven live 2026-07-09; merged + pushed to main (incl. review-hardening 46e4f93). (`docs/epics/epic-1-agent-core.md`)
 2. ⬜ **Infra / home box** — Linux + BlueZ + systemd + re-scan Bots (overlaps #1) ← **NEXT**
-3. ⬜ **home-mcp** — wrap the existing scheduler code
+3. 🟡 **home-mcp** — wrap the existing scheduler code. SOFTWARE SHIPPED 2026-07-09 (in-process tools `control_device`/`list_devices`/`battery_status`, merged to main, 123 tests). PENDING hardware: battery-byte spike + real-Bot smoke test. Built ahead of #2 (Infra) since it's pure software. (`docs/superpowers/plans/2026-07-09-home-mcp-control-tools.md`)
 4. ⬜ **family-mcp** — reminders + shopping + calendar + `schedule_task`/memory
 5. ⬜ **finance-mcp** — Firefly + bank scrapers + weekly summary (read-only)
 6. ⬜ **payslips** (vision)
