@@ -30,3 +30,25 @@ def test_context_manager_closes_and_data_persists(tmp_path):
         c.append(1, "user", "kept")
     # connection closed on exit; data durable in the file
     assert Conversation(path).load(1) == [{"role": "user", "content": "kept"}]
+
+
+def test_usable_from_a_different_thread(tmp_path):
+    # Regression: the Telegram adapter runs handlers in a worker thread (asyncio.to_thread)
+    # while the store is built on the main thread. A single shared sqlite3 connection
+    # raised ProgrammingError there. A store instance must work across threads.
+    import threading
+
+    c = Conversation(str(tmp_path / "m.db"))  # created on the main thread
+    errors = []
+
+    def worker():
+        try:
+            c.append(7, "user", "from-thread")
+            assert c.load(7) == [{"role": "user", "content": "from-thread"}]
+        except Exception as e:  # sqlite3.ProgrammingError before the fix
+            errors.append(repr(e))
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert errors == []

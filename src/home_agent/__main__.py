@@ -9,6 +9,9 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx logs each Telegram API request at INFO, and the URL embeds the bot token.
+    # Quiet it to WARNING so the token never lands in logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     log = logging.getLogger("home_agent")
     config = load_config()
     if not config.telegram_bot_token:
