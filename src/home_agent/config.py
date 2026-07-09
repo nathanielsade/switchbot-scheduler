@@ -6,6 +6,7 @@ from switchbot_scheduler.config import load_env
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_DB_PATH = "home_agent.db"
 DEFAULT_OPENAI_TIMEOUT = 60.0  # seconds; caps a hung request instead of the SDK's 600s default
+DEFAULT_DEVICES_PATH = "devices.yaml"
 
 
 @dataclass
@@ -16,6 +17,7 @@ class Config:
     model: str = DEFAULT_MODEL
     db_path: str = DEFAULT_DB_PATH
     openai_timeout: float = DEFAULT_OPENAI_TIMEOUT
+    devices_path: str = DEFAULT_DEVICES_PATH
 
 
 def _parse_chat_ids(raw: str) -> set[int]:
@@ -40,4 +42,5 @@ def load_config(path: str | None = None) -> Config:
         model=os.environ.get("HOME_AGENT_MODEL", DEFAULT_MODEL),
         db_path=os.environ.get("HOME_AGENT_DB", DEFAULT_DB_PATH),
         openai_timeout=float(os.environ.get("HOME_AGENT_OPENAI_TIMEOUT", DEFAULT_OPENAI_TIMEOUT)),
+        devices_path=os.environ.get("SWITCHBOT_DEVICES", DEFAULT_DEVICES_PATH),
     )

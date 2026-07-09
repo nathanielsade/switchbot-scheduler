@@ -3,7 +3,7 @@ import pytest
 
 def _clean_env(monkeypatch):
     for k in ("ALLOWED_CHAT_IDS", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN",
-              "HOME_AGENT_MODEL", "HOME_AGENT_DB", "HOME_AGENT_OPENAI_TIMEOUT"):
+              "HOME_AGENT_MODEL", "HOME_AGENT_DB", "HOME_AGENT_OPENAI_TIMEOUT", "SWITCHBOT_DEVICES"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -38,3 +38,13 @@ def test_load_config_openai_timeout_default_and_override(tmp_path, monkeypatch):
     assert load_config(str(env)).openai_timeout == DEFAULT_OPENAI_TIMEOUT
     monkeypatch.setenv("HOME_AGENT_OPENAI_TIMEOUT", "12.5")
     assert load_config(str(env)).openai_timeout == 12.5
+
+
+def test_load_config_devices_path_default_and_override(tmp_path, monkeypatch):
+    _clean_env(monkeypatch)
+    from home_agent.config import load_config, DEFAULT_DEVICES_PATH
+    env = tmp_path / ".env"
+    env.write_text('OPENAI_API_KEY=sk-x\nTELEGRAM_BOT_TOKEN=tok\n')
+    assert load_config(str(env)).devices_path == DEFAULT_DEVICES_PATH
+    monkeypatch.setenv("SWITCHBOT_DEVICES", "/tmp/d.yaml")
+    assert load_config(str(env)).devices_path == "/tmp/d.yaml"
