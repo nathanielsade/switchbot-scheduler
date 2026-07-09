@@ -12,7 +12,8 @@ from ..core import build_schedule, preview_conversation
 from ..readback import readback
 from ..ble_writer import write_schedule
 from ..validator import validate
-from ..model import Schedule, DeviceSchedule, Event
+from ..actuator import run_immediate, ActionResult
+from ..model import Schedule, DeviceSchedule, Event, ImmediateAction
 
 load_env()  # pick up OPENAI_API_KEY from a local .env if present (shell exports still win)
 
@@ -53,6 +54,10 @@ class ApplyReq(BaseModel):
     schedule: dict
 
 
+class ExecuteReq(BaseModel):
+    actions: list[dict]
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
@@ -62,11 +67,15 @@ def index():
 def preview(req: PreviewReq):
     try:
         registry = _registry()
-        kind, payload, schedule = preview_conversation(
+        pr = preview_conversation(
             req.messages, registry, datetime.now(), completion_fn=_completion_fn)
-        if kind == "clarification":
-            return {"ok": True, "kind": "clarification", "message": payload}
-        return {"ok": True, "kind": "schedule", "readback": payload, "schedule": schedule_to_json(schedule)}
+        immediate = [{"device": a.device, "action": a.action} for a in pr.immediate]
+        if pr.clarification is not None:
+            return {"ok": True, "kind": "clarification", "message": pr.clarification, "immediate": immediate}
+        if pr.schedule is not None:
+            return {"ok": True, "kind": "schedule", "readback": pr.readback,
+                    "schedule": schedule_to_json(pr.schedule), "immediate": immediate}
+        return {"ok": True, "kind": "none", "immediate": immediate}
     except Exception as err:
         return {"ok": False, "error": str(err)}
 
@@ -84,6 +93,18 @@ def apply(req: ApplyReq):
                 seen.add(ds.device)
                 written.append(ds.device)
         return {"ok": True, "written": written}
+    except Exception as err:
+        return {"ok": False, "error": str(err)}
+
+
+@app.post("/execute")
+def execute(req: ExecuteReq):
+    try:
+        registry = _registry()
+        actions = [ImmediateAction(device=a["device"], action=a["action"]) for a in req.actions]
+        results = run_immediate(actions, registry)
+        return {"ok": True, "results": [
+            {"device": r.device, "action": r.action, "ok": r.ok, "error": r.error} for r in results]}
     except Exception as err:
         return {"ok": False, "error": str(err)}
 
