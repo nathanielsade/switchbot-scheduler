@@ -4,9 +4,11 @@ import logging
 from telegram.ext import Application, MessageHandler, filters
 
 from .agent import run_turn
-from .home import load_home_tools
+from .home import build_home_tools, load_registry
 from .memory import Conversation
 from .prompts import FAMILY_SYSTEM_PROMPT
+from .schedule_store import ScheduleStore
+from .schedules import build_schedule_tools
 from .tools import DEFAULT_TOOLS
 
 log = logging.getLogger("home_agent")
@@ -71,7 +73,13 @@ def build_application(config, *, client=None, conversation=None):
         client = OpenAI(api_key=config.openai_api_key, timeout=config.openai_timeout)
     if conversation is None:
         conversation = Conversation(config.db_path)
-    tools = list(DEFAULT_TOOLS) + load_home_tools(config)
+    registry = load_registry(config)
+    tools = list(DEFAULT_TOOLS)
+    if registry is not None:
+        tools += build_home_tools(registry)
+        tools += build_schedule_tools(registry, ScheduleStore(config.db_path))
+    else:
+        log.warning("devices file not found at %s — home control + scheduling disabled", config.devices_path)
     app = Application.builder().token(config.telegram_bot_token).build()
 
     async def on_message(update, context):

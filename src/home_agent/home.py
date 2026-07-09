@@ -123,6 +123,11 @@ def _battery_impl(args, *, registry, battery_fn) -> str:
     return "\n".join(lines)
 
 
+def load_registry(config):
+    """Return the device Registry, or None if the devices file is absent."""
+    return Registry.load(config.devices_path) if os.path.exists(config.devices_path) else None
+
+
 def load_home_tools(config) -> list[Tool]:
     """Build the home tools from config.devices_path. If the file is absent, log a warning and
     return [] so the bot still runs (time-only) instead of crashing at startup."""

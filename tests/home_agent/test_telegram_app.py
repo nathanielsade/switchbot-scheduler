@@ -38,3 +38,16 @@ def test_split_for_telegram_prefers_newline_boundary():
 def test_split_for_telegram_short_text_is_single_chunk():
     from home_agent.telegram_app import _split_for_telegram
     assert _split_for_telegram("שלום") == ["שלום"]
+
+
+def test_build_application_composes_schedule_tools(tmp_path, make_fake_client):
+    # devices file present so home + schedule tools load; assert no crash and one handler
+    dev = tmp_path / "devices.yaml"
+    dev.write_text("devices:\n  dining:\n    aliases: [פינת אוכל]\n    ble_id: ID3\n")
+    from home_agent.config import Config
+    cfg = Config(openai_api_key="x", telegram_bot_token="123456:ABCdefGHIjklMNOpqrsTUVwxyz012345",
+                 allowed_chat_ids={1}, db_path=str(tmp_path / "m.db"), devices_path=str(dev))
+    app = build_application(cfg, client=make_fake_client([]),
+                            conversation=Conversation(str(tmp_path / "m.db")))
+    assert isinstance(app, Application)
+    assert sum(len(hs) for hs in app.handlers.values()) == 1

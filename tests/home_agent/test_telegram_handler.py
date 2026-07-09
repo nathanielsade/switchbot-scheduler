@@ -88,3 +88,25 @@ def test_handle_message_runs_control_device_through_composed_tools(tmp_path, mak
                            conversation=conv, client=client, tools=tools)
     assert calls == [("ID3", 1)]
     assert reply == "הדלקתי את המטבח"
+
+
+def test_handle_message_runs_schedule_device_through_composed_tools(tmp_path, make_fake_client):
+    from home_agent.schedules import build_schedule_tools
+    from home_agent.schedule_store import ScheduleStore
+    from home_agent.tools import DEFAULT_TOOLS
+    from switchbot_scheduler.registry import Registry, Device
+    reg = Registry([Device(name="dining", aliases=["פינת אוכל"], ble_id="ID3")])
+    store = ScheduleStore(str(tmp_path / "s.db"))
+    writes = []
+    sched = build_schedule_tools(reg, store, write_fn=lambda b, a: writes.append((b, a)))
+    tools = list(DEFAULT_TOOLS) + sched
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "schedule_device",
+                         "arguments": {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]}}]},
+        {"content": "קבעתי"},
+    ])
+    conv = Conversation(str(tmp_path / "m.db"))
+    reply = handle_message(1, "תזמן", config=_cfg(tmp_path, {1}),
+                           conversation=conv, client=client, tools=tools)
+    assert writes and writes[-1][0] == "ID3"
+    assert reply == "קבעתי"
