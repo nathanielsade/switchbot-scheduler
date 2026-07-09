@@ -92,3 +92,15 @@ def test_load_home_tools_present_file_builds_three(tmp_path):
     cfg = Config(openai_api_key="x", telegram_bot_token="t:t", allowed_chat_ids={1},
                  devices_path=str(dev))
     assert {t.name for t in load_home_tools(cfg)} == {"control_device", "list_devices", "battery_status"}
+
+
+def test_control_device_reports_requested_action_for_inverted():
+    tools = build_home_tools(_registry(), actuate_fn=lambda b, c: None)
+    out = _tool(tools, "control_device").impl({"device": "סלון", "action": "on"})
+    assert "living_room: on ✅" in out   # reports intent, not the resolved 'off'
+
+
+def test_control_device_reports_press_for_ac():
+    tools = build_home_tools(_registry(), actuate_fn=lambda b, c: None)
+    out = _tool(tools, "control_device").impl({"device": "מזגן", "action": "on"})
+    assert "ac: press ✅" in out

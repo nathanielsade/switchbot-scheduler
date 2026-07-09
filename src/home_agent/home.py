@@ -76,7 +76,8 @@ def _control_impl(args, *, registry, actuate_fn) -> str:
         return f"unknown action '{action}'. Use on, off, or press."
     result = run_immediate([ImmediateAction(name, action)], registry, actuate_fn=actuate_fn)[0]
     if result.ok:
-        return f"{result.device}: {result.action} ✅"
+        reported = "press" if registry.is_press_mode(name) else action
+        return f"{result.device}: {reported} ✅"
     return f"{result.device}: failed — {result.error}"
 
 
