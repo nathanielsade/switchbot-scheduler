@@ -10,3 +10,9 @@ devices:
     aliases: ["ac", "air conditioner", "מזגן"]
     ble_id: "3FD44C5A-BFCE-66AD-9A89-68EFDDC28699"
     mode: press   # momentary toggle only (no real on/off); on/off intent -> a press
+  kitchen:
+    aliases: ["kitchen", "מטבח", "kitchen bot"]
+    ble_id: "0F4665AE-85F1-3777-2F06-BEA04F8008B7"   # CoreBluetooth UUID (macOS); confirmed by watched press 2026-07-09
+  garden:
+    aliases: ["garden", "גינה", "yard"]
+    ble_id: "C1E03979-593D-0C27-2A35-221EEF17E12E"   # CoreBluetooth UUID (macOS); confirmed by watched press 2026-07-09
