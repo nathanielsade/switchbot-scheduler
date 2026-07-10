@@ -12,9 +12,7 @@ _SHOW_SCHEMA = {"type": "function", "function": {
 
 _ADD_SCHEMA = {"type": "function", "function": {
     "name": "add_to_list",
-    "description": "Add an item to the shared shopping list. Use the canonical item name; if the user's "
-                   "wording is a variant of something already known, reuse the known name (call "
-                   "known_items if unsure). Report back in the user's language.",
+    "description": "Add an item to the shared shopping list. Report back in the user's language.",
     "parameters": {"type": "object", "properties": {
         "item": {"type": "string", "description": "Canonical item name (Hebrew or English)."},
         "quantity": {"type": "string", "description": "Optional free-text amount, e.g. '2' or '2 ליטר'."},
