@@ -21,8 +21,11 @@ then a TDD plan at build time. This file is the map; the session todo list track
 5. ⬜ **finance-mcp** — Firefly + bank scrapers + weekly summary (read-only)
 6. ⬜ **payslips** (vision)
 7. ⬜ **Israeli live-price layer**
+8. ⬜ **Roborock vacuum control** (`roborock-mcp`) — full control of the Q Revo: rooms, vac/mop plan, scheduling. Pure software (cloud API); 24/7 schedules want the box.
+9. ⬜ **Sensibo Sky AC control** (`sensibo-mcp`) — cloud-API stateful AC control (mode/temp/fan) + room climate sensing. Pure software.
 
 *(The old "what did I set last Friday" history idea is folded into the agent's SQLite memory — Epics 1 & 4 — not a separate feature.)*
+*(Epics 8–9 are independent device integrations that extend the home-control surface; both are pure software behind an injectable client seam, buildable anytime — no strict box dependency for immediate control.)*
 
 ## Where we are today (becomes Module 1)
 We already built a **natural-language SwitchBot scheduler** (repo `nathanielsade/switchbot-scheduler`):
@@ -128,6 +131,46 @@ The brain transplant + interface. **Build order step 1.**
 - [ ] Tools: `price_check(item)`, `compare_basket(list)` → "Rami Levy 342₪ vs Shufersal 389₪, but Shufersal has 1+1 on your coffee".
 - [ ] Price-drop alerts on regularly-bought products.
 
+## Epic H — Roborock Q Revo vacuum control (`roborock-mcp`)
+Full natural-language control of the Roborock **Q Revo** robot vacuum (vac + mop, auto-empty/mop-wash dock).
+Same in-process `Tool` pattern as `home-mcp`, behind an **injectable client seam** so tests stay offline.
+**Goal:** *"תשאב את הסלון"*, *"תנקה את חדר השינה — שאיבה ואז שטיפה"*, *"תחזור לתחנה"*, *"תרוקן את המיכל"*,
+*"תנקה כל יום בשמונה"*.
+- **Library / auth:** `python-roborock` (cloud + local; powers the Home Assistant integration — confirm current
+  version at build time). Log in with the Roborock account; discover devices; supports MQTT (cloud) + local.
+- [ ] **Auth + device/map discovery:** log in, list devices, pull the home **map + room segmentation**; cache a
+  registry mapping **segment ids ↔ Hebrew room names** (סלון/מטבח/חדר שינה…), like `devices.yaml`. Deterministic
+  registry; the model does the fuzzy room-name mapping (as with shopping `known_items`).
+- [ ] **Immediate control:** `start_clean` (whole home), `clean_rooms(rooms=[…])` (segment/room clean),
+  `pause`/`resume`/`stop`, `return_to_dock`, `locate`.
+- [ ] **Cleaning plan:** suction/fan power (quiet/balanced/turbo/max), mop water-flow level, and clean **order** —
+  vacuum-only / mop-only / **vac-then-mop** (שאיבה ואז שטיפה) — settable per run and per room.
+- [ ] **Dock actions:** empty dust bin, wash mop, dry mop.
+- [ ] **Status:** `vacuum_status` → state, battery %, area/time cleaned, current room, error state.
+- [ ] **Scheduling:** one-off + recurring cleans — prefer the robot's own on-device schedules where supported
+  (offline-robust, like the SwitchBot on-device timers); otherwise route through `schedule_task`/cron (needs the box, per D3).
+- [ ] **Consumables (optional):** brush/filter/sensor life readouts → feed maintenance reminders.
+- **Notes:** cloud API ⇒ immediate control works without the box; only 24/7 cron scheduling needs it. Follows the
+  BLE/vision testing convention — inject a **fake roborock client** (no network) mirroring `actuate_fn`/`write_fn`.
+
+## Epic I — Sensibo Sky AC control (`sensibo-mcp`)
+Stateful control of the **Sensibo Sky** (Wi-Fi IR controller for the AC) via its official cloud API — full
+mode/temperature/fan control **plus** the Sky's built-in room temp/humidity sensor.
+**Goal:** *"תדליק מזגן בחדר שינה על עשרים ושתיים, קור"*, *"כמה חם בסלון?"*, *"תכבה את המזגן"*.
+- **Library / auth:** Sensibo **REST API v2** (`home.sensibo.com/api/v2`) via `pysensibo` (powers the Home
+  Assistant integration — confirm at build time). Auth = a **Sensibo API key** (`SENSIBO_API_KEY` in `.env`).
+- [ ] **Config + device discovery:** read `SENSIBO_API_KEY`; list pods; cache a registry mapping **pod ids ↔
+    Hebrew room names**. Unset key → tools don't load (bot still runs), same graceful pattern as calendar.
+- [ ] **Control:** `set_ac_power(on/off)`, `set_ac_mode(cool/heat/fan/dry/auto)`, `set_ac_temperature`,
+    `set_ac_fan_level`, `set_ac_swing`.
+- [ ] **Sense:** `sensibo_status` → current on/off + settings, and the Sky's **room temperature + humidity**.
+- [ ] **Optional:** Climate React (threshold automation) enable/disable; simple presets ("לילה", "יציאה מהבית").
+- [ ] **Scheduling** via `schedule_task`/cron (box) — "תדליק מזגן בחדר שינה בעשר בלילה על עשרים וארבע".
+- **Notes / reconciliation:** this **supersedes/complements** the existing BLE SwitchBot מזגן *press-mode* control
+  — the SwitchBot IR blast only toggles blindly, whereas Sensibo is **stateful** (knows mode/temp/setpoint and reads
+  the room). Decide at build time whether Sensibo replaces the SwitchBot path for that AC or they coexist. Inject a
+  **fake Sensibo client** for offline tests.
+
 ---
 
 ## Cross-cutting
@@ -137,3 +180,4 @@ The brain transplant + interface. **Build order step 1.**
 
 ## Suggested sequencing
 Epic 0 (box) → A (agent spine + 1 tool) → B (home) → C+D (family + scheduling) → E (finance) → F (payslips) → G (prices). Each epic ships something usable on its own.
+Epics H (Roborock) and I (Sensibo) are independent device integrations — slot them in whenever, no hard dependency (immediate control needs no box; only their recurring schedules do).
