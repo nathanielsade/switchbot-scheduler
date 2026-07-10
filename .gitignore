@@ -8,3 +8,4 @@ secrets.yaml
 # Home-agent runtime data (conversation history)
 *.db
 home_agent.db
+secrets/
