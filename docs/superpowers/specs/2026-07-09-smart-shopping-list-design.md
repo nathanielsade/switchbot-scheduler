@@ -45,6 +45,11 @@ maps the user's free text (`חלב 3% תנובה`) to the right existing item �
 (exact canonical name → id, create if absent). The *language mapping* is the agent's reasoning, informed
 by `known_items()`.
 
+**Where the policy lives:** in Phase 1 the "reuse the known canonical name" instruction sits in the
+`add_to_list` **tool description** (the shipped `FAMILY_SYSTEM_PROMPT` says nothing about shopping). Phase 2
+must **lift this into `FAMILY_SYSTEM_PROMPT`** as one cross-tool rule, since `mark_bought` and the receipt
+commit also canonicalize — otherwise the guidance is duplicated per tool and drifts.
+
 ## Tools
 
 ### Phase 1 — the shared list (foundation + trivial CRUD)
@@ -66,17 +71,31 @@ by `known_items()`.
   pending list (via `show_list`), and phrases it in Hebrew with the reasons. On-demand only.
 
 ### Phase 3 — receipt photo → vision → confirm → log
+This spans **two distinct turns** (a photo is not a text turn, and the model must not run on the raw image
+or canonicalize during the photo).
+
+**Turn 1 — the photo (deterministic; no model turn):**
 1. **Photo handler (new Telegram surface):** the bot currently handles text only; add a handler for photo
    messages → download the image bytes.
 2. **`parse_receipt(image_bytes)`** → a dedicated OpenAI **vision** call with a structured-output schema →
    `{store?, date?, printed_total?, lines:[{name, quantity?, unit_price?}]}`. This is an **injectable
    seam** (`vision_fn`) so tests never hit the network.
-3. The agent **canonicalizes each line** (via `known_items`) and the parse is stored as the chat's
-   `pending_receipt`. The bot replies with the read-back, a **sum-vs-printed-total sanity check**
-   (flag if the line prices don't add up to the printed total), and asks to approve/correct.
-4. **`commit_receipt(chat_id, corrections?)`** → for each line append a `purchases` row (item, qty, price,
-   today's date, `source='receipt'`, a shared `receipt_id`); flip any matching `pending` list rows to
-   `bought`; clear the `pending_receipt`. `cancel_receipt(chat_id)` discards it. The image is **not kept**
+3. **`stage_receipt(chat_id, parsed)`** — deterministic: store the parse (raw line names, **not yet
+   canonicalized**) as the chat's `pending_receipt` with a `created_at`. The handler replies with the
+   read-back + a **sum-vs-printed-total sanity check** (flag if the line prices don't add up to the printed
+   total). The image is **not kept** after parsing.
+
+**Turn 2 — the approval (a normal text turn through `run_turn`):**
+4. The user's "כן" / "תקן…" is an ordinary turn. The receipt tools are **bound per-turn with `chat_id`
+   captured in a Python closure and omitted from the schema** (the model must never supply a Telegram
+   `chat_id`; chat-agnostic Phase 1/2 tools stay startup-built, but receipt tools are constructed in
+   `handle_message` where the `chat_id` is known).
+5. The model **canonicalizes each pending line** (via `known_items`), then calls
+   **`commit_receipt(corrections?)`** (no `chat_id` arg): if the pending is **expired** (older than ~15 min
+   via `created_at`) or absent, refuse ("that receipt expired — send it again"); otherwise append one
+   `purchases` row per line (item, qty, price, today's date, `source='receipt'`, a shared `receipt_id`),
+   flip matching `pending` list rows to `bought`, and clear the `pending_receipt`. `cancel_receipt()`
+   discards it. A new photo replaces any prior pending. The image is **not kept**
    after parsing.
 
 ## Boundaries / deferred

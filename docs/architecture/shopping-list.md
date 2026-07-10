@@ -100,7 +100,7 @@ id        (pk)                id         (pk)                    id           (p
 name      UNIQUE   ◀───┐      item_id    ─────▶ items.id        item_id      ─────▶ items.id
 created_at             │      quantity   TEXT?                   quantity     REAL?
                        │      note       TEXT?                   unit_price   REAL?
-                       └──────status     'pending'|'removed'     purchased_on TEXT (ISO date)
+                       └──────status     'pending'|'removed'|'bought'     purchased_on TEXT (ISO date)
                               added_at                            source       'chat'|'receipt'
                               resolved_at?                        receipt_id   TEXT?   (groups a shop)
                                                                   created_at
@@ -119,7 +119,9 @@ chat_id     (pk)      parsed_json TEXT      created_at        ← one in-flight 
   (from `mark_bought` or a receipt). Append-only. A photographed shop shares one `receipt_id` — that's how
   "the Thursday shop" is a group.
 - **`pending_receipts`** — a parsed-but-unconfirmed receipt, one per chat, cleared on approve/cancel.
-  Exists only so the confirm-first receipt flow can span two chat turns.
+  Exists only so the confirm-first receipt flow can span two chat turns. **`created_at` is load-bearing:**
+  a pending receipt older than an expiry window (~15 min) is treated as stale and refused at commit, so a
+  forgotten receipt can't be committed later by an unrelated "כן".
 
 Why "purchases", not "saved lists": history = what you **bought** (reality), which is exactly what
 prediction and cost need. The list is just current intentions; its changes are logged too, but we don't
@@ -141,11 +143,15 @@ the instruction the model reads about when/how to use it), and a deterministic P
 | `known_items()` | 1 ✅ | reads `items` | List canonical names, so the model reuses them instead of making near-duplicates. |
 | `suggest_restock()` | 2 | reads `purchases` | Deterministic median-gap math → items likely out, **with the numbers**. |
 | `purchase_history(item?)` | 2 | reads `purchases` | Dates/prices for one item or the recent log (follow-ups). |
-| `commit_receipt(chat_id, corrections?)` | 3 | reads `pending_receipts`; writes `purchases`,`list` | Apply an approved receipt. |
-| `cancel_receipt(chat_id)` | 3 | writes `pending_receipts` | Discard an unconfirmed receipt. |
+| `commit_receipt(corrections?)` | 3 | reads `pending_receipts`; writes `purchases`,`list` | Apply the pending receipt. **`chat_id` is bound per-turn in Python, NOT a model arg** (see §6). Refuses a stale/expired pending. |
+| `cancel_receipt()` | 3 | writes `pending_receipts` | Discard the pending receipt (`chat_id` bound per-turn). |
 
-Plus one **non-tool** piece in Phase 3: `parse_receipt(image_bytes)` — a dedicated OpenAI **vision** call
-(behind an injectable `vision_fn` seam) invoked by the Telegram photo handler, not by the model.
+Plus two **non-tool** pieces in Phase 3, both run by the Telegram **photo handler** (not the model):
+- `parse_receipt(image_bytes)` — a dedicated OpenAI **vision** call (behind an injectable `vision_fn` seam)
+  → structured `{store, date, printed_total, lines}`.
+- `stage_receipt(chat_id, parsed)` — **deterministic**: stores the parse as the chat's pending receipt and
+  returns the read-back + sum-vs-total text the handler replies with. **No model turn on the photo.**
+  Canonicalization + commit happen on the *next* (text) turn, when the user approves.
 
 ---
 
@@ -160,7 +166,11 @@ It does **not** contain shopping logic. It sets the standing rules the model app
   so it won't promise reminders/scheduling it lacks.
 - **The canonicalization policy** (the crucial shopping bit): *"use the canonical item name; if the user's
   wording is a variant of something already known, reuse the known name — call `known_items` if unsure."*
-  This is what makes `חלב`, `חלב 3%`, and a receipt's `חלב תנובה` all land on one `items` row.
+  **Accurate status:** today this guidance lives only in the `add_to_list` **tool description**, not in
+  `FAMILY_SYSTEM_PROMPT` (the shipped prompt says nothing about shopping). As Phase 2/3 add more tools that
+  canonicalize (`mark_bought`, the receipt commit), the policy will be **lifted into `FAMILY_SYSTEM_PROMPT`**
+  as one cross-tool rule instead of being repeated in each tool's description. This is what makes `חלב`,
+  `חלב 3%`, and a receipt's `חלב תנובה` all land on one `items` row.
 
 ### 6b. The **tools** — deterministic storage & math (no judgment)
 Everything that must be *correct and testable*:
@@ -184,6 +194,14 @@ What only an LLM can do well:
 > The line: **if it must be exactly right, it's a tool; if it needs to understand language or use judgment,
 > it's the model, steered by the prompt.** Cost math is never left to the model; Hebrew mapping is never
 > hard-coded in Python.
+
+### 6d. Chat scoping — the model never handles `chat_id`
+The receipt tools (`commit_receipt`, `cancel_receipt`) act on *this chat's* pending receipt, so they need a
+`chat_id`. That is an **infrastructure fact the model must not carry**. So unlike the always-on Phase 1/2
+tools (built once at startup), the **receipt tools are bound per turn**: `handle_message` already has the
+`chat_id`, so it constructs the receipt tools with `chat_id` **captured in a Python closure** and **omitted
+from the schema**. The model just calls `commit_receipt()` / `commit_receipt(corrections)`; the right chat
+is baked in. (Phase 1/2 tools stay startup-built since they're chat-agnostic — the list/history are shared.)
 
 ---
 
@@ -211,22 +229,35 @@ user: "מה כדאי לקנות?"
   → reply: "כדאי לקנות: חלב (נגמר לפי הקצב), קפה. לחם קנית לפני יומיים, כנראה בסדר."
 ```
 
-### Flow C — receipt photo (Phase 3, confirm-first)
+### Flow C — receipt photo (Phase 3, confirm-first, two distinct turns)
+This flow spans **two turns with a hard boundary between them**, because a photo is not a text turn and
+the model must not run on the raw image or canonicalize during the photo.
+
+**Turn 1 — the photo (deterministic; NO model turn):**
 ```
 user: [photo of receipt]
-  → on_photo handler: download image bytes
-  → parse_receipt(bytes) [OpenAI vision, injectable]:
+  → on_photo handler (Telegram): download image bytes
+  → parse_receipt(bytes) [OpenAI vision, injectable vision_fn]:
         → {store, date, printed_total, lines:[{name, qty, unit_price}]}
-  → model canonicalizes each line (known_items) → store pending_receipts[chat_id]
-  → bot replies: read-back + sum-vs-printed-total check + "לשמור?"
+  → stage_receipt(chat_id, parsed):  deterministic — store parsed JSON as pending_receipts[chat_id]
+        (raw line names, NOT yet canonicalized), stamp created_at
+  → handler replies deterministically: the read-back + sum-vs-printed-total check + "לשמור?"
+```
+**Turn 2 — the approval (a normal text turn through run_turn):**
+```
 user: "כן"   (or "תקן: חלב 7.90")
-  → model calls commit_receipt(chat_id, corrections?)
+  → run_turn as usual; the chat's receipt tools were bound with chat_id in Python (§6d)
+  → model reads the pending receipt, maps each raw line name → canonical item (known_items),
+    then calls commit_receipt(corrections?)   # no chat_id arg — it's closed over
+      → refuse if the pending is expired/absent
       → append one purchases row per line (item, qty, price, today, source='receipt', shared receipt_id)
       → flip matching pending list rows → 'bought'
       → clear pending_receipts[chat_id]
   → reply: "נשמר: 11 פריטים, ₪214.30. סימנתי חלב וביצים כנקנו."
 ```
-If the user ignores it / sends something else, the pending receipt just sits until replaced or cancelled.
+So canonicalization is a normal turn-2 responsibility (model + `known_items`), never a magic step on the
+photo. A pending receipt **expires** (~15 min via `created_at`): a later, unrelated "כן" won't commit a
+stale one — `commit_receipt` refuses it and asks the user to resend; a new photo replaces any prior pending.
 
 ---
 
@@ -238,11 +269,13 @@ src/home_agent/
                         #   Thread-safe (connection-per-op). The ONLY place that touches the DB.
   shopping.py           # build_shopping_tools(store, *, now_fn=None): the Tool objects + their impls.
                         #   P2 adds suggest_restock/purchase_history; P3 adds commit/cancel_receipt.
-  receipts.py  (P3)     # parse_receipt(image_bytes, *, vision_fn=None): the vision call + schema.
-                        #   (Kept separate so the vision seam and prompt live in one focused file.)
+  receipts.py  (P3)     # parse_receipt(image_bytes, *, vision_fn=None): the vision call + schema; and
+                        #   stage_receipt(chat_id, parsed): deterministic pending-receipt store + read-back.
+                        #   (Kept separate so the vision seam lives in one focused file.)
   prompts.py            # FAMILY_SYSTEM_PROMPT — identity, Hebrew, honesty, canonicalization policy.
-  telegram_app.py       # build_application composes shopping tools (unconditionally); P3 adds the
-                        #   photo handler (on_photo) alongside the text handler.
+  telegram_app.py       # build_application composes chat-agnostic shopping tools (unconditionally).
+                        #   P3: adds the photo handler (on_photo → parse_receipt + stage_receipt), and
+                        #   handle_message binds the chat-scoped receipt tools per turn (chat_id closure).
   tools.py              # the shared Tool dataclass + DEFAULT_TOOLS (unchanged).
 
 tests/home_agent/
