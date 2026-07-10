@@ -80,3 +80,24 @@ class ShoppingStore:
                 (name,)).fetchall()
         return [{"purchased_on": d, "quantity": q, "unit_price": u, "source": s}
                 for d, q, u, s in rows]
+
+    def purchase_dates_by_item(self):
+        """{canonical name: [distinct ISO purchase dates ascending]} — same-day duplicates collapsed
+        (via GROUP BY), so cadence math never sees a 0-day gap from a double log."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT i.name, p.purchased_on FROM purchases p JOIN items i ON i.id = p.item_id "
+                "GROUP BY i.name, p.purchased_on ORDER BY i.name, p.purchased_on").fetchall()
+        out = {}
+        for name, d in rows:
+            out.setdefault(name, []).append(d)
+        return out
+
+    def recent_purchases(self, limit=20):
+        """Most recent purchases across all items, newest first."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT i.name, p.purchased_on, p.unit_price FROM purchases p "
+                "JOIN items i ON i.id = p.item_id ORDER BY p.purchased_on DESC, p.id DESC LIMIT ?",
+                (limit,)).fetchall()
+        return [{"item": n, "purchased_on": d, "unit_price": u} for n, d, u in rows]

@@ -71,3 +71,24 @@ def test_usable_from_a_different_thread(tmp_path):
     t.start()
     t.join()
     assert errors == []
+
+
+def test_purchase_dates_by_item_collapses_same_day(tmp_path):
+    s = ShoppingStore(str(tmp_path / "sh.db"))
+    s.buy("חלב", "2026-07-01")
+    s.buy("חלב", "2026-07-01")   # same day again — must collapse to one date
+    s.buy("חלב", "2026-07-06")
+    s.buy("קפה", "2026-07-03")
+    d = s.purchase_dates_by_item()
+    assert d["חלב"] == ["2026-07-01", "2026-07-06"]   # distinct, ascending
+    assert d["קפה"] == ["2026-07-03"]
+
+
+def test_recent_purchases_newest_first_with_limit(tmp_path):
+    s = ShoppingStore(str(tmp_path / "sh.db"))
+    s.buy("חלב", "2026-07-01", unit_price=6.9)
+    s.buy("קפה", "2026-07-05")
+    s.buy("לחם", "2026-07-03")
+    recent = s.recent_purchases(limit=2)
+    assert [r["item"] for r in recent] == ["קפה", "לחם"]   # newest first, limited
+    assert recent[0]["purchased_on"] == "2026-07-05"
