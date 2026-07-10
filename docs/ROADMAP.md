@@ -93,7 +93,7 @@ The brain transplant + interface. **Build order step 1.**
 
 ## Epic C — family-mcp: reminders + shopping list + calendar
 **Build order step 3.**
-- [ ] Shared **calendar** (Google Calendar API): "what do we have this week?"
+- 🟡 Shared **calendar** (Google Calendar API): "what do we have this week?" — SOFTWARE SHIPPED 2026-07-10 (merged to main, 189 tests): `find_events` (spans calendars, dedup) + deterministic cross-turn confirmed `prepare_`/`commit_`/`cancel_calendar_change`; service account + shared Family calendar. PENDING: the user's Google Cloud setup (service account + share calendars) + live smoke. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-10-google-calendar*`.
 - [ ] **Reminders**: "remind us tomorrow evening to pay arnona" → `schedule_task` → Telegram message at time T.
 - 🟡 **Smart shopping list** (SQLite, shared) — designed as one spec, built in 3 phases. Spec: `docs/superpowers/specs/2026-07-09-smart-shopping-list-design.md`.
   - ✅ **Phase 1 SHIPPED 2026-07-09** (merged to main, 163 tests): shared add/remove/show/mark-bought via in-process tools over an append-only `items`/`list`/`purchases` SQLite store; canonicalization done by the agent (`known_items`). Plan: `docs/superpowers/plans/2026-07-09-shopping-list-phase-1.md`. (Live Telegram smoke test still pending.)
