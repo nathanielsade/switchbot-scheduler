@@ -1,4 +1,5 @@
-from datetime import datetime
+import statistics
+from datetime import datetime, date
 
 from .tools import Tool
 
@@ -48,6 +49,24 @@ _KNOWN_SCHEMA = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }}
 
+_RESTOCK_SCHEMA = {"type": "function", "function": {
+    "name": "suggest_restock",
+    "description": "Suggest what to restock based on purchase history: items bought regularly whose usual "
+                   "interval has elapsed and that aren't already on the list. Use when the user asks what "
+                   "to buy or what they're out of. Returns items with the numbers (last bought, usual gap, "
+                   "days since); phrase them warmly in the user's language.",
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}}
+
+_HISTORY_SCHEMA = {"type": "function", "function": {
+    "name": "purchase_history",
+    "description": "Show purchase history — for one item (its dates and prices) or, with no item, the "
+                   "recent purchases across everything. Use for 'when did we last buy X' / 'how much was X'.",
+    "parameters": {"type": "object", "properties": {
+        "item": {"type": "string", "description": "Canonical item name; omit for the recent log."},
+    }, "additionalProperties": False},
+}}
+
 
 def _now():
     return datetime.now().astimezone()
@@ -93,6 +112,47 @@ def _known_impl(args, *, store):
     return ", ".join(names) if names else "(no items known yet)"
 
 
+def _days_between(a_iso, b_iso):
+    return (date.fromisoformat(b_iso) - date.fromisoformat(a_iso)).days
+
+
+def _restock_impl(args, *, store, now_fn):
+    today = now_fn().date()
+    pending = {r["item"] for r in store.pending()}
+    due = []
+    for name, dates in store.purchase_dates_by_item().items():
+        if name in pending or len(dates) < 2:
+            continue
+        gaps = [_days_between(dates[i], dates[i + 1]) for i in range(len(dates) - 1)]
+        median_gap = statistics.median(gaps)
+        days_since = (today - date.fromisoformat(dates[-1])).days
+        if days_since >= median_gap:
+            due.append((days_since - median_gap, name, dates[-1], median_gap, days_since))
+    if not due:
+        return "nothing looks due to restock right now"
+    due.sort(reverse=True)   # most overdue first
+    return "\n".join(
+        f"{name}: last bought {last}, usually every {int(gap)} days, {ds} days since (due)"
+        for _, name, last, gap, ds in due)
+
+
+def _history_impl(args, *, store):
+    item = (args.get("item") or "").strip()
+    if item:
+        rows = store.purchases_for(item)
+        if not rows:
+            return f"no purchase history for {item}"
+        return "\n".join(
+            f"{r['purchased_on']}: {item}" + (f" ₪{r['unit_price']}" if r["unit_price"] is not None else "")
+            for r in rows)
+    rows = store.recent_purchases()
+    if not rows:
+        return "no purchases logged yet"
+    return "\n".join(
+        f"{r['purchased_on']}: {r['item']}" + (f" ₪{r['unit_price']}" if r["unit_price"] is not None else "")
+        for r in rows)
+
+
 def build_shopping_tools(store, *, now_fn=None) -> list[Tool]:
     now_fn = now_fn or _now
     return [
@@ -102,4 +162,8 @@ def build_shopping_tools(store, *, now_fn=None) -> list[Tool]:
         Tool(name="mark_bought", schema=_BOUGHT_SCHEMA,
              impl=lambda a: _bought_impl(a, store=store, now_fn=now_fn)),
         Tool(name="known_items", schema=_KNOWN_SCHEMA, impl=lambda a: _known_impl(a, store=store)),
+        Tool(name="suggest_restock", schema=_RESTOCK_SCHEMA,
+             impl=lambda a: _restock_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="purchase_history", schema=_HISTORY_SCHEMA,
+             impl=lambda a: _history_impl(a, store=store)),
     ]

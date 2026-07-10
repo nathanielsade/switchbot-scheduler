@@ -54,3 +54,59 @@ def test_known_items(tmp_path):
     _tool(tools, "add_to_list").impl({"item": "קפה"})
     out = _tool(tools, "known_items").impl({})
     assert "חלב" in out and "קפה" in out
+
+
+def _tools_at(tmp_path, today_iso):
+    from datetime import date
+    store = ShoppingStore(str(tmp_path / "sh.db"))
+
+    class _Now:
+        def date(self):
+            return date.fromisoformat(today_iso)
+
+    return build_shopping_tools(store, now_fn=lambda: _Now()), store
+
+
+def test_suggest_restock_flags_overdue_with_numbers(tmp_path):
+    tools, store = _tools_at(tmp_path, "2026-07-17")
+    for d in ("2026-07-01", "2026-07-06", "2026-07-11"):   # milk every 5 days
+        store.buy("חלב", d)
+    out = _tool(tools, "suggest_restock").impl({})
+    assert "חלב" in out
+    assert "5" in out and "6" in out          # usual gap 5, 6 days since last (2026-07-11 → 17)
+
+
+def test_suggest_restock_skips_recent_and_sparse_and_listed(tmp_path):
+    tools, store = _tools_at(tmp_path, "2026-07-12")
+    # recent: bought today-ish, not due
+    for d in ("2026-07-01", "2026-07-06", "2026-07-11"):
+        store.buy("חלב", d)                    # last 07-11, gap 5, only 1 day since → NOT due
+    # sparse: only one purchase → no signal
+    store.buy("קפה", "2026-07-01")
+    # due by history but already on the list → excluded
+    for d in ("2026-06-01", "2026-06-11", "2026-06-21"):
+        store.buy("סוכר", d)                   # gap 10, ~21 days since on 07-12 → would be due
+    store.add("סוכר")                          # ...but it's on the list now
+    out = _tool(tools, "suggest_restock").impl({})
+    assert "חלב" not in out and "קפה" not in out and "סוכר" not in out
+    assert "nothing" in out.lower()
+
+
+def test_suggest_restock_collapses_same_day(tmp_path):
+    tools, store = _tools_at(tmp_path, "2026-07-17")
+    store.buy("חלב", "2026-07-01")
+    store.buy("חלב", "2026-07-01")             # duplicate same-day log
+    store.buy("חלב", "2026-07-11")
+    out = _tool(tools, "suggest_restock").impl({})
+    # distinct dates [07-01, 07-11] → gap 10, 6 days since on 07-17 → NOT due (no phantom 0-gap)
+    assert "nothing" in out.lower()
+
+
+def test_purchase_history_for_item_and_recent(tmp_path):
+    tools, store = _tools_at(tmp_path, "2026-07-17")
+    store.buy("חלב", "2026-07-01", unit_price=6.9)
+    out_item = _tool(tools, "purchase_history").impl({"item": "חלב"})
+    assert "2026-07-01" in out_item and "6.9" in out_item
+    out_all = _tool(tools, "purchase_history").impl({})
+    assert "חלב" in out_all
+    assert "no purchase history" in _tool(tools, "purchase_history").impl({"item": "לא-קיים"}).lower()
