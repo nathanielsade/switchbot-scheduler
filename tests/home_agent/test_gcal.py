@@ -79,3 +79,30 @@ def test_find_events_dedups_same_instant_across_offsets(tmp_path):
     out = tools["find_events"].impl({})
     assert out.count("Dentist") == 1          # same instant -> deduped despite different offset strings
     assert "ref:fam|efam" in out               # preferred the write-calendar copy
+
+
+def test_prepare_create_stages_and_no_google_call(tmp_path):
+    tools, svc, store = _tools({"fam": [], "me": []}, tmp_path)
+    out = tools["prepare_calendar_change"].impl(
+        {"action": "create", "title": "רופא שיניים", "start": "2026-07-14T15:00:00+03:00"})
+    assert "כן" in out or "confirm" in out.lower()
+    assert store.current(1)["payload"]["title"] == "רופא שיניים"
+    assert svc.events().calls == []          # nothing sent to Google
+
+
+def test_prepare_create_requires_title_and_start(tmp_path):
+    tools, _, store = _tools({"fam": [], "me": []}, tmp_path)
+    out = tools["prepare_calendar_change"].impl({"action": "create", "title": "x"})   # no start
+    assert "title" in out or "start" in out
+    assert store.current(1) is None
+
+
+def test_prepare_update_delete_require_write_calendar_ref(tmp_path):
+    tools, _, store = _tools({"fam": [], "me": []}, tmp_path)
+    # ref on a personal calendar → refused
+    out = tools["prepare_calendar_change"].impl({"action": "delete", "ref": "me|e1"})
+    assert "family" in out.lower()
+    assert store.current(1) is None
+    # ref on the write calendar → staged
+    ok = tools["prepare_calendar_change"].impl({"action": "delete", "ref": "fam|e1"})
+    assert store.current(1)["payload"] == {"action": "delete", "ref": "fam|e1"}

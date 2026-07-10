@@ -48,6 +48,24 @@ _FIND_SCHEMA = {"type": "function", "function": {
 }}
 
 
+_PREPARE_SCHEMA = {"type": "function", "function": {
+    "name": "prepare_calendar_change",
+    "description": "STAGE a calendar change for the user to confirm (does not apply it yet). action is "
+                   "create/update/delete. For create: give title + start (ISO). For update/delete: give a "
+                   "ref from find_events (only Family-calendar events can be changed). After staging, tell "
+                   "the user the exact change and wait; it is applied only when they confirm and you call "
+                   "commit_calendar_change.",
+    "parameters": {"type": "object", "properties": {
+        "action": {"type": "string", "enum": ["create", "update", "delete"]},
+        "title": {"type": "string"}, "start": {"type": "string", "description": "ISO datetime."},
+        "end": {"type": "string", "description": "ISO datetime (optional)."},
+        "all_day": {"type": "boolean"},
+        "notes": {"type": "string"},
+        "ref": {"type": "string", "description": "Event ref from find_events (for update/delete)."},
+    }, "required": ["action"], "additionalProperties": False},
+}}
+
+
 def _find_impl(args, *, service, calendar_ids, write_id, now_fn):
     query = (args.get("query") or "").strip() or None
     now = now_fn()
@@ -72,6 +90,36 @@ def _find_impl(args, *, service, calendar_ids, write_id, now_fn):
         for cal_id, e in items)
 
 
+def _prepare_impl(args, *, pending_store, chat_id, write_id, now_fn):
+    action = (args.get("action") or "").strip().lower()
+    if action == "create":
+        title = (args.get("title") or "").strip()
+        start = (args.get("start") or "").strip()
+        if not title or not start:
+            return "to create an event I need both a title and a start time"
+        payload = {"action": "create", "title": title, "start": start, "end": args.get("end"),
+                   "all_day": bool(args.get("all_day")), "notes": args.get("notes")}
+        when = start + (" (all day)" if payload["all_day"] else "")
+        summary = f"create '{title}' at {when}"
+    elif action in ("update", "delete"):
+        ref = (args.get("ref") or "").strip()
+        if "|" not in ref:
+            return "which event? use find_events first and pass its ref"
+        if ref.rsplit("|", 1)[0] != write_id:
+            return "I can only change events on the Family calendar; that one is on a personal calendar."
+        if action == "delete":
+            payload = {"action": "delete", "ref": ref}
+            summary = f"delete event {ref}"
+        else:
+            payload = {"action": "update", "ref": ref, "title": args.get("title"),
+                       "start": args.get("start"), "end": args.get("end"), "notes": args.get("notes")}
+            summary = f"update event {ref}"
+    else:
+        return "unknown action; use create, update, or delete"
+    pending_store.stage(chat_id, payload, now_fn().isoformat())
+    return f"Ready to {summary}. Reply כן to confirm."
+
+
 def build_calendar_tools(service, pending_store, chat_id, committable_id, *,
                          calendar_ids, write_id, now_fn=None):
     now_fn = now_fn or _now
@@ -79,6 +127,9 @@ def build_calendar_tools(service, pending_store, chat_id, committable_id, *,
         Tool(name="find_events", schema=_FIND_SCHEMA,
              impl=lambda a: _find_impl(a, service=service, calendar_ids=calendar_ids,
                                        write_id=write_id, now_fn=now_fn)),
+        Tool(name="prepare_calendar_change", schema=_PREPARE_SCHEMA,
+             impl=lambda a: _prepare_impl(a, pending_store=pending_store, chat_id=chat_id,
+                                          write_id=write_id, now_fn=now_fn)),
     ]
 
 
