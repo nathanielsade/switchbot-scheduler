@@ -106,3 +106,63 @@ def test_prepare_update_delete_require_write_calendar_ref(tmp_path):
     # ref on the write calendar → staged
     ok = tools["prepare_calendar_change"].impl({"action": "delete", "ref": "fam|e1"})
     assert store.current(1)["payload"] == {"action": "delete", "ref": "fam|e1"}
+
+
+def test_commit_refuses_same_turn(tmp_path):
+    # committable_id snapshot is None (nothing staged before the turn); staging now → id != None → refuse
+    tools, svc, store = _tools({"fam": [], "me": []}, tmp_path)   # committable_id=None
+    tools["prepare_calendar_change"].impl(
+        {"action": "create", "title": "x", "start": "2026-07-14T15:00:00+03:00"})
+    out = tools["commit_calendar_change"].impl({})
+    assert "כן" in out or "reply" in out.lower()
+    assert not any(c[0] == "insert" for c in svc.events().calls)   # NOT applied
+    assert store.current(1) is not None                            # still staged
+
+
+def test_commit_applies_when_staged_in_prior_turn(tmp_path):
+    svc = _Service({"fam": [], "me": []})
+    store = CalendarPending(str(tmp_path / "c.db"))
+    sid = store.stage(1, {"action": "create", "title": "x", "start": "2026-07-14T15:00:00+03:00",
+                          "end": None, "all_day": False, "notes": None}, _now().isoformat())
+    # committable_id == the prior-turn staged id
+    tools = {t.name: t for t in build_calendar_tools(svc, store, 1, sid, calendar_ids=["fam", "me"],
+                                                     write_id="fam", now_fn=_now)}
+    out = tools["commit_calendar_change"].impl({})
+    assert "✅" in out
+    ins = [c for c in svc.events().calls if c[0] == "insert"]
+    assert ins and ins[0][1]["calendarId"] == "fam"
+    assert ins[0][1]["body"]["summary"] == "x"
+    assert store.current(1) is None                                # cleared
+
+
+def test_commit_all_day_uses_exclusive_end(tmp_path):
+    svc = _Service({"fam": [], "me": []})
+    store = CalendarPending(str(tmp_path / "c.db"))
+    sid = store.stage(1, {"action": "create", "title": "trip", "start": "2026-07-14T00:00:00+03:00",
+                          "end": None, "all_day": True, "notes": None}, _now().isoformat())
+    tools = {t.name: t for t in build_calendar_tools(svc, store, 1, sid, calendar_ids=["fam"],
+                                                     write_id="fam", now_fn=_now)}
+    tools["commit_calendar_change"].impl({})
+    body = [c for c in svc.events().calls if c[0] == "insert"][0][1]["body"]
+    assert body["start"] == {"date": "2026-07-14"}
+    assert body["end"] == {"date": "2026-07-15"}                   # exclusive: one-day → +1
+
+
+def test_commit_expired(tmp_path):
+    from datetime import timedelta
+    svc = _Service({"fam": [], "me": []})
+    store = CalendarPending(str(tmp_path / "c.db"))
+    old = (_now() - timedelta(minutes=30)).isoformat()
+    sid = store.stage(1, {"action": "delete", "ref": "fam|e1"}, old)
+    tools = {t.name: t for t in build_calendar_tools(svc, store, 1, sid, calendar_ids=["fam"],
+                                                     write_id="fam", now_fn=_now)}
+    out = tools["commit_calendar_change"].impl({})
+    assert "expired" in out.lower()
+    assert not any(c[0] == "delete" for c in svc.events().calls)
+
+
+def test_cancel_clears(tmp_path):
+    tools, svc, store = _tools({"fam": [], "me": []}, tmp_path)
+    tools["prepare_calendar_change"].impl({"action": "create", "title": "x", "start": "2026-07-14T15:00:00+03:00"})
+    tools["cancel_calendar_change"].impl({})
+    assert store.current(1) is None

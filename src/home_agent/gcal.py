@@ -1,10 +1,11 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 
 from .tools import Tool
 
 log = logging.getLogger("home_agent")
 _TZ = "Asia/Jerusalem"
+_EXPIRY_MINUTES = 15
 
 
 def _now():
@@ -66,6 +67,18 @@ _PREPARE_SCHEMA = {"type": "function", "function": {
 }}
 
 
+_COMMIT_SCHEMA = {"type": "function", "function": {
+    "name": "commit_calendar_change",
+    "description": "Apply the change the user just confirmed. Only call this after you staged a change with "
+                   "prepare_calendar_change on a PREVIOUS turn and the user has now confirmed (e.g. 'כן').",
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+_CANCEL_SCHEMA = {"type": "function", "function": {
+    "name": "cancel_calendar_change",
+    "description": "Discard the staged (unconfirmed) calendar change.",
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+
 def _find_impl(args, *, service, calendar_ids, write_id, now_fn):
     query = (args.get("query") or "").strip() or None
     now = now_fn()
@@ -120,6 +133,65 @@ def _prepare_impl(args, *, pending_store, chat_id, write_id, now_fn):
     return f"Ready to {summary}. Reply כן to confirm."
 
 
+def _apply(service, payload, write_id):
+    action = payload["action"]
+    if action == "create":
+        body = {"summary": payload["title"]}
+        if payload.get("notes"):
+            body["description"] = payload["notes"]
+        if payload.get("all_day"):
+            start_date = payload["start"][:10]
+            end_date = (payload["end"][:10] if payload.get("end")
+                        else (date.fromisoformat(start_date) + timedelta(days=1)).isoformat())
+            body["start"] = {"date": start_date}
+            body["end"] = {"date": end_date}
+        else:
+            end = payload.get("end")
+            if not end:
+                end = (datetime.fromisoformat(payload["start"]) + timedelta(hours=1)).isoformat()
+            body["start"] = {"dateTime": payload["start"], "timeZone": _TZ}
+            body["end"] = {"dateTime": end, "timeZone": _TZ}
+        service.events().insert(calendarId=write_id, body=body).execute()
+        return f"created '{payload['title']}' ✅"
+    cal_id, event_id = payload["ref"].rsplit("|", 1)
+    if action == "delete":
+        service.events().delete(calendarId=cal_id, eventId=event_id).execute()
+        return "deleted ✅"
+    body = {}
+    if payload.get("title"):
+        body["summary"] = payload["title"]
+    if payload.get("notes"):
+        body["description"] = payload["notes"]
+    if payload.get("start"):
+        body["start"] = {"dateTime": payload["start"], "timeZone": _TZ}
+    if payload.get("end"):
+        body["end"] = {"dateTime": payload["end"], "timeZone": _TZ}
+    service.events().patch(calendarId=cal_id, eventId=event_id, body=body).execute()
+    return "updated ✅"
+
+
+def _commit_impl(args, *, service, pending_store, chat_id, committable_id, write_id, now_fn):
+    p = pending_store.current(chat_id)
+    if not p:
+        return "nothing staged to confirm"
+    if p["id"] != committable_id:
+        return "I've noted the change — reply כן to apply it."      # staged this turn; confirm on the next
+    if (now_fn() - datetime.fromisoformat(p["created_at"])).total_seconds() > _EXPIRY_MINUTES * 60:
+        pending_store.clear(chat_id)
+        return "that change expired — tell me again."
+    try:
+        result = _apply(service, p["payload"], write_id)
+    except Exception as e:
+        return f"couldn't apply the change ({e})"
+    pending_store.clear(chat_id)
+    return result
+
+
+def _cancel_impl(args, *, pending_store, chat_id):
+    pending_store.clear(chat_id)
+    return "canceled the pending calendar change"
+
+
 def build_calendar_tools(service, pending_store, chat_id, committable_id, *,
                          calendar_ids, write_id, now_fn=None):
     now_fn = now_fn or _now
@@ -130,6 +202,11 @@ def build_calendar_tools(service, pending_store, chat_id, committable_id, *,
         Tool(name="prepare_calendar_change", schema=_PREPARE_SCHEMA,
              impl=lambda a: _prepare_impl(a, pending_store=pending_store, chat_id=chat_id,
                                           write_id=write_id, now_fn=now_fn)),
+        Tool(name="commit_calendar_change", schema=_COMMIT_SCHEMA,
+             impl=lambda a: _commit_impl(a, service=service, pending_store=pending_store, chat_id=chat_id,
+                                         committable_id=committable_id, write_id=write_id, now_fn=now_fn)),
+        Tool(name="cancel_calendar_change", schema=_CANCEL_SCHEMA,
+             impl=lambda a: _cancel_impl(a, pending_store=pending_store, chat_id=chat_id)),
     ]
 
 
