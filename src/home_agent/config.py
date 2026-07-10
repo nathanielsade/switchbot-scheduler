@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from switchbot_scheduler.config import load_env
 
@@ -18,6 +18,9 @@ class Config:
     db_path: str = DEFAULT_DB_PATH
     openai_timeout: float = DEFAULT_OPENAI_TIMEOUT
     devices_path: str = DEFAULT_DEVICES_PATH
+    google_sa_keyfile: str = ""
+    calendar_ids: list[str] = field(default_factory=list)
+    calendar_write_id: str = ""
 
 
 def _parse_chat_ids(raw: str) -> set[int]:
@@ -35,6 +38,7 @@ def _parse_chat_ids(raw: str) -> set[int]:
 
 def load_config(path: str | None = None) -> Config:
     load_env(path)  # reuse the sibling package's loader (override=False: shell exports win)
+    cal_ids = [x for x in os.environ.get("CALENDAR_IDS", "").replace(",", " ").split() if x.strip()]
     return Config(
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
@@ -43,4 +47,7 @@ def load_config(path: str | None = None) -> Config:
         db_path=os.environ.get("HOME_AGENT_DB", DEFAULT_DB_PATH),
         openai_timeout=float(os.environ.get("HOME_AGENT_OPENAI_TIMEOUT", DEFAULT_OPENAI_TIMEOUT)),
         devices_path=os.environ.get("SWITCHBOT_DEVICES", DEFAULT_DEVICES_PATH),
+        google_sa_keyfile=os.environ.get("GOOGLE_SA_KEYFILE", ""),
+        calendar_ids=cal_ids,
+        calendar_write_id=os.environ.get("CALENDAR_WRITE_ID", "") or (cal_ids[0] if cal_ids else ""),
     )
