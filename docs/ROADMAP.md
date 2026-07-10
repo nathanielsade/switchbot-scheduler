@@ -97,7 +97,7 @@ The brain transplant + interface. **Build order step 1.**
 - [ ] **Reminders**: "remind us tomorrow evening to pay arnona" → `schedule_task` → Telegram message at time T.
 - 🟡 **Smart shopping list** (SQLite, shared) — designed as one spec, built in 3 phases. Spec: `docs/superpowers/specs/2026-07-09-smart-shopping-list-design.md`.
   - ✅ **Phase 1 SHIPPED 2026-07-09** (merged to main, 163 tests): shared add/remove/show/mark-bought via in-process tools over an append-only `items`/`list`/`purchases` SQLite store; canonicalization done by the agent (`known_items`). Plan: `docs/superpowers/plans/2026-07-09-shopping-list-phase-1.md`. (Live Telegram smoke test still pending.)
-  - [ ] **Phase 2** — learn purchase cycles ("milk every ~5 days"); `suggest_restock`/`purchase_history` (deterministic median-gap math, agent reasons). NOTE: dedupe same-day purchases so double mark_bought doesn't skew the cadence.
+  - ✅ **Phase 2 SHIPPED 2026-07-10** (merged to main, 170 tests): learns purchase cycles via `suggest_restock` (median-gap over DISTINCT dates — same-day dedup done, excludes items already listed, ≥2 purchases) + `purchase_history` (deterministic math, agent reasons); canonicalization policy lifted into FAMILY_SYSTEM_PROMPT. On-demand only (proactive nudge needs the box). Plan: `docs/superpowers/plans/2026-07-10-shopping-list-phase-2.md`.
   - [ ] **Phase 3** — **receipt photos** → OpenAI **vision** → confirm → log full basket + cost. NOTE: clarify price = per-unit.
 
 ## Epic D — schedule_task + shared memory
