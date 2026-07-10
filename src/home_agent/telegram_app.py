@@ -40,10 +40,12 @@ def _split_for_telegram(text, limit=_TELEGRAM_MAX_CHARS):
 
 def handle_message(chat_id, text, *, config, conversation, client,
                    tools=DEFAULT_TOOLS, system=FAMILY_SYSTEM_PROMPT, model=None,
-                   calendar_service=None, calendar_pending=None):
+                   calendar_service=None, calendar_pending=None, sender=None):
     """Process one inbound Telegram text message. Returns the reply text, or None to stay silent.
     Sequencing note: history is loaded BEFORE the current message is persisted, so the current
-    turn is not duplicated in the model context."""
+    turn is not duplicated in the model context.
+    `sender` is the speaker's name; when present it's prefixed to the message ("name: text") both
+    for the model and in stored history, so the shared group knows who said what across turns."""
     model = model or config.model
     log.info("incoming chat_id=%s text_len=%d", chat_id, len(text or ""))
     if not config.allowed_chat_ids:  # discovery mode: allow-list not configured yet
@@ -61,9 +63,10 @@ def handle_message(chat_id, text, *, config, conversation, client,
         turn_tools = turn_tools + build_calendar_tools(
             calendar_service, calendar_pending, chat_id, committable_id,
             calendar_ids=config.calendar_ids, write_id=config.calendar_write_id)
+    message_text = f"{sender}: {text}" if sender else text
     history = conversation.load(chat_id)
     try:
-        reply = run_turn(text, history, client=client, model=model, system=system, tools=turn_tools)
+        reply = run_turn(message_text, history, client=client, model=model, system=system, tools=turn_tools)
     except Exception:
         log.exception("agent error for chat_id=%s", chat_id)
         return _ERROR_REPLY
@@ -72,7 +75,7 @@ def handle_message(chat_id, text, *, config, conversation, client,
         # silent, and do NOT persist an empty assistant turn that would pollute future context.
         log.warning("agent produced an empty reply for chat_id=%s", chat_id)
         return _ERROR_REPLY
-    conversation.append(chat_id, "user", text)
+    conversation.append(chat_id, "user", message_text)
     conversation.append(chat_id, "assistant", reply)
     return reply
 
@@ -105,6 +108,9 @@ def build_application(config, *, client=None, conversation=None):
             return
         chat_id = update.effective_chat.id
         chat = update.effective_chat
+        # Auto-recognize the speaker by their Telegram name, so Menashe knows who is talking.
+        user = update.effective_user
+        sender = user.first_name if user else None
 
         async def _keep_typing():
             # Show "typing…" while the (multi-second) agent turn runs, so the bot never looks stuck.
@@ -121,7 +127,7 @@ def build_application(config, *, client=None, conversation=None):
             reply = await asyncio.to_thread(
                 handle_message, chat_id, message.text or "",
                 config=config, conversation=conversation, client=client, tools=tools,
-                calendar_service=cal_service, calendar_pending=cal_pending)
+                calendar_service=cal_service, calendar_pending=cal_pending, sender=sender)
         finally:
             typing.cancel()
         if reply:

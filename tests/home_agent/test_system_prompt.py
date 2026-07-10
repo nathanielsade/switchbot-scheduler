@@ -8,6 +8,9 @@ def test_prompt_is_nonempty_and_stable():
     assert not any(ch.isdigit() for ch in FAMILY_SYSTEM_PROMPT)  # no timestamps/volatile numbers
     assert "canonical" in FAMILY_SYSTEM_PROMPT.lower()   # shopping canonicalization policy present
     assert "calendar" in FAMILY_SYSTEM_PROMPT.lower()    # calendar confirm-before-apply policy present
+    assert "Menashe" in FAMILY_SYSTEM_PROMPT             # the assistant's name
+    assert "Netanel" in FAMILY_SYSTEM_PROMPT             # household roster: the husband
+    assert "Saray" in FAMILY_SYSTEM_PROMPT               # household roster: the wife
 
 
 def test_run_turn_sends_identical_system_prompt_each_turn(make_fake_client):

@@ -18,6 +18,28 @@ def test_allowed_chat_runs_agent_persists_and_replies(tmp_path, make_fake_client
                             {"role": "assistant", "content": "שלום"}]
 
 
+def test_sender_name_is_attributed_to_the_model_and_persisted(tmp_path, make_fake_client):
+    # "recognize us": the speaker's name is prefixed to the message the model sees, and the
+    # attributed line is what we persist, so who-said-what survives across turns.
+    client = make_fake_client([{"content": "שלום נתנאל"}])
+    conv = Conversation(str(tmp_path / "m.db"))
+    reply = handle_message(1, "היי", config=_cfg(tmp_path, {1}), conversation=conv,
+                           client=client, sender="נתנאל")
+    assert reply == "שלום נתנאל"
+    sent = client._calls[0]["messages"]
+    assert any(m["content"] == "נתנאל: היי" for m in sent)   # model is told who is speaking
+    assert conv.load(1) == [{"role": "user", "content": "נתנאל: היי"},
+                            {"role": "assistant", "content": "שלום נתנאל"}]
+
+
+def test_no_sender_leaves_message_unattributed(tmp_path, make_fake_client):
+    # Backward-compatible: without a sender the message is stored verbatim (no prefix).
+    client = make_fake_client([{"content": "שלום"}])
+    conv = Conversation(str(tmp_path / "m.db"))
+    handle_message(1, "היי", config=_cfg(tmp_path, {1}), conversation=conv, client=client)
+    assert conv.load(1)[0] == {"role": "user", "content": "היי"}
+
+
 def test_unauthorized_chat_ignored_no_side_effects(tmp_path, make_fake_client):
     client = make_fake_client([{"content": "should not happen"}])
     conv = Conversation(str(tmp_path / "m.db"))
