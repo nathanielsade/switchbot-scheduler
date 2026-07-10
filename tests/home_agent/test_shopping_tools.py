@@ -102,6 +102,15 @@ def test_suggest_restock_collapses_same_day(tmp_path):
     assert "nothing" in out.lower()
 
 
+def test_suggest_restock_due_exactly_at_interval_boundary(tmp_path):
+    tools, store = _tools_at(tmp_path, "2026-07-16")
+    for d in ("2026-07-01", "2026-07-06", "2026-07-11"):   # gaps [5,5] → median 5
+        store.buy("חלב", d)
+    # last bought 2026-07-11; today 2026-07-16 → days_since == 5 == median_gap → DUE (>= boundary)
+    out = _tool(tools, "suggest_restock").impl({})
+    assert "חלב" in out
+
+
 def test_purchase_history_for_item_and_recent(tmp_path):
     tools, store = _tools_at(tmp_path, "2026-07-17")
     store.buy("חלב", "2026-07-01", unit_price=6.9)

@@ -130,7 +130,7 @@ def _restock_impl(args, *, store, now_fn):
         return "nothing looks due to restock right now"
     due.sort(reverse=True)   # most overdue first
     return "\n".join(
-        f"{name}: last bought {last}, usually every {int(gap)} days, {ds} days since (due)"
+        f"{name}: last bought {last}, usually every {gap:g} days, {ds} days since (due)"
         for _, name, last, gap, ds in due)
 
 
