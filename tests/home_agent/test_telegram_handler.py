@@ -127,3 +127,38 @@ def test_handle_message_runs_add_to_list_through_composed_tools(tmp_path, make_f
                            conversation=conv, client=client, tools=tools)
     assert reply == "הוספתי חלב"
     assert store.pending()[0]["item"] == "חלב"
+
+
+def test_calendar_same_turn_prepare_then_commit_is_not_applied(tmp_path, make_fake_client):
+    from home_agent.calendar_pending import CalendarPending
+
+    class _Exec:
+        def __init__(self, r): self._r = r
+        def execute(self): return self._r
+
+    class _Events:
+        def __init__(self): self.calls = []
+        def list(self, **k): self.calls.append(("list", k)); return _Exec({"items": []})
+        def insert(self, **k): self.calls.append(("insert", k)); return _Exec({"id": "x"})
+        def patch(self, **k): self.calls.append(("patch", k)); return _Exec({})
+        def delete(self, **k): self.calls.append(("delete", k)); return _Exec({})
+
+    class _Svc:
+        def __init__(self): self._e = _Events()
+        def events(self): return self._e
+
+    svc, pend = _Svc(), CalendarPending(str(tmp_path / "c.db"))
+    # model tries prepare THEN commit in one turn
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "prepare_calendar_change",
+                         "arguments": {"action": "create", "title": "רופא", "start": "2026-07-14T15:00:00+03:00"}}]},
+        {"tool_calls": [{"id": "c2", "name": "commit_calendar_change", "arguments": {}}]},
+        {"content": "רשמתי, תאשרו"},
+    ])
+    conv = Conversation(str(tmp_path / "m.db"))
+    cfg = _cfg(tmp_path, {1})
+    cfg.calendar_ids = ["fam"]; cfg.calendar_write_id = "fam"
+    reply = handle_message(1, "תוסיף רופא שיניים", config=cfg, conversation=conv, client=client,
+                           calendar_service=svc, calendar_pending=pend)
+    assert not any(c[0] == "insert" for c in svc.events().calls)   # same-turn commit did NOT apply
+    assert pend.current(1) is not None                             # still staged for a later confirm

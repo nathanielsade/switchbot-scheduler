@@ -5,6 +5,8 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, MessageHandler, filters
 
 from .agent import run_turn
+from .calendar_pending import CalendarPending
+from .gcal import build_calendar_tools, load_calendar_service
 from .home import build_home_tools, load_registry
 from .memory import Conversation
 from .prompts import FAMILY_SYSTEM_PROMPT
@@ -37,7 +39,8 @@ def _split_for_telegram(text, limit=_TELEGRAM_MAX_CHARS):
 
 
 def handle_message(chat_id, text, *, config, conversation, client,
-                   tools=DEFAULT_TOOLS, system=FAMILY_SYSTEM_PROMPT, model=None):
+                   tools=DEFAULT_TOOLS, system=FAMILY_SYSTEM_PROMPT, model=None,
+                   calendar_service=None, calendar_pending=None):
     """Process one inbound Telegram text message. Returns the reply text, or None to stay silent.
     Sequencing note: history is loaded BEFORE the current message is persisted, so the current
     turn is not duplicated in the model context."""
@@ -50,9 +53,17 @@ def handle_message(chat_id, text, *, config, conversation, client,
     if chat_id not in config.allowed_chat_ids:
         log.warning("ignoring message from unauthorized chat_id=%s", chat_id)
         return None
+    turn_tools = list(tools)
+    if calendar_service is not None and calendar_pending is not None:
+        # Snapshot BEFORE run_turn: a change staged DURING this turn must not be committable
+        # this same turn (same-turn guard) — commit_calendar_change compares against this id.
+        committable_id = (calendar_pending.current(chat_id) or {}).get("id")
+        turn_tools = turn_tools + build_calendar_tools(
+            calendar_service, calendar_pending, chat_id, committable_id,
+            calendar_ids=config.calendar_ids, write_id=config.calendar_write_id)
     history = conversation.load(chat_id)
     try:
-        reply = run_turn(text, history, client=client, model=model, system=system, tools=tools)
+        reply = run_turn(text, history, client=client, model=model, system=system, tools=turn_tools)
     except Exception:
         log.exception("agent error for chat_id=%s", chat_id)
         return _ERROR_REPLY
@@ -76,6 +87,8 @@ def build_application(config, *, client=None, conversation=None):
         client = OpenAI(api_key=config.openai_api_key, timeout=config.openai_timeout)
     if conversation is None:
         conversation = Conversation(config.db_path)
+    cal_service = load_calendar_service(config)
+    cal_pending = CalendarPending(config.db_path) if cal_service is not None else None
     registry = load_registry(config)
     tools = list(DEFAULT_TOOLS)
     tools += build_shopping_tools(ShoppingStore(config.db_path))
@@ -107,7 +120,8 @@ def build_application(config, *, client=None, conversation=None):
         try:
             reply = await asyncio.to_thread(
                 handle_message, chat_id, message.text or "",
-                config=config, conversation=conversation, client=client, tools=tools)
+                config=config, conversation=conversation, client=client, tools=tools,
+                calendar_service=cal_service, calendar_pending=cal_pending)
         finally:
             typing.cancel()
         if reply:

@@ -10,5 +10,8 @@ FAMILY_SYSTEM_PROMPT = (
     "For the shared shopping list, always use the canonical item name: if the user's wording is a variant "
     "of something already on the known-items list, reuse that known name (use known_items if unsure) "
     "rather than creating a near-duplicate. "
+    "For calendar changes, first find the event with find_events, tell the user the exact change, and apply "
+    "it only after they confirm — by staging with prepare_calendar_change and, on a later confirming "
+    "message, calling commit_calendar_change. "
     "If a request is ambiguous, ask one short clarifying question rather than guessing."
 )
