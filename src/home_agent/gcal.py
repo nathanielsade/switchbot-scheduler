@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from .tools import Tool
 
@@ -19,6 +19,19 @@ def _start_of(e):
 def _end_of(e):
     en = e.get("end") or {}
     return en.get("dateTime") or en.get("date") or ""
+
+
+def _start_key(e):
+    """A comparable start value: timed events normalized to UTC (so the same instant across calendars/
+    offsets collapses and sorts chronologically); all-day events keep their date string."""
+    s = e.get("start") or {}
+    dt = s.get("dateTime")
+    if dt:
+        try:
+            return datetime.fromisoformat(dt).astimezone(timezone.utc).isoformat()
+        except ValueError:
+            return dt
+    return s.get("date") or ""
 
 
 _FIND_SCHEMA = {"type": "function", "function": {
@@ -42,13 +55,16 @@ def _find_impl(args, *, service, calendar_ids, write_id, now_fn):
     time_max = args.get("time_max") or ((now + timedelta(days=180)) if query else now + timedelta(days=7)).isoformat()
     chosen = {}
     for cal_id in calendar_ids:
-        resp = service.events().list(calendarId=cal_id, timeMin=time_min, timeMax=time_max,
-                                     singleEvents=True, orderBy="startTime", q=query).execute()
+        params = {"calendarId": cal_id, "timeMin": time_min, "timeMax": time_max,
+                  "singleEvents": True, "orderBy": "startTime"}
+        if query:
+            params["q"] = query
+        resp = service.events().list(**params).execute()
         for e in resp.get("items", []):
-            key = (e.get("iCalUID"), _start_of(e))
+            key = (e.get("iCalUID"), _start_key(e))
             if key not in chosen or cal_id == write_id:
                 chosen[key] = (cal_id, e)
-    items = sorted(chosen.values(), key=lambda ce: _start_of(ce[1]))
+    items = sorted(chosen.values(), key=lambda ce: _start_key(ce[1]))
     if not items:
         return "no events found"
     return "\n".join(

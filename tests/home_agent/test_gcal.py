@@ -69,3 +69,13 @@ def test_find_events_default_range_one_week(tmp_path):
     tools["find_events"].impl({})
     kw = svc.events().calls[0][1]
     assert kw["timeMin"].startswith("2026-07-10") and kw["timeMax"].startswith("2026-07-17")
+
+
+def test_find_events_dedups_same_instant_across_offsets(tmp_path):
+    # same event (uid A), same instant expressed in different offsets on the two calendars
+    fam = _ev("A", "2026-07-11T10:00:00+03:00", "Dentist", "efam")
+    me = _ev("A", "2026-07-11T07:00:00+00:00", "Dentist", "eme")
+    tools, _, _ = _tools({"fam": [fam], "me": [me]}, tmp_path)
+    out = tools["find_events"].impl({})
+    assert out.count("Dentist") == 1          # same instant -> deduped despite different offset strings
+    assert "ref:fam|efam" in out               # preferred the write-calendar copy
