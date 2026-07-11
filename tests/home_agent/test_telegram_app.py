@@ -102,7 +102,8 @@ def test_build_application_composes_roborock_tools_when_configured(tmp_path, mon
     def spy(client, registry, **kw):
         seen["client"] = client
         seen["registry"] = registry
-        return real(client, registry, **kw)
+        seen["tools"] = real(client, registry, **kw)
+        return seen["tools"]
 
     monkeypatch.setattr(ta, "build_roborock_tools", spy)
     app = build_application(cfg, client=make_fake_client([]),
@@ -110,6 +111,12 @@ def test_build_application_composes_roborock_tools_when_configured(tmp_path, mon
     assert isinstance(app, Application)
     assert isinstance(seen.get("client"), FakeRoborockClient)
     assert isinstance(seen.get("registry"), RoomRegistry)
+    # Verify the composed tools include all expected vacuum capabilities
+    composed_tools = seen.get("tools", [])
+    tool_names = {t.name for t in composed_tools}
+    expected_names = {"clean", "list_rooms", "vacuum_status", "control_vacuum", "dock_action",
+                      "consumables", "schedule_clean", "get_cleaning_schedule", "cancel_cleaning_schedule"}
+    assert expected_names <= tool_names, f"Missing tools: {expected_names - tool_names}"
 
 
 def test_build_application_omits_roborock_tools_when_unconfigured(tmp_path, monkeypatch, make_fake_client):
