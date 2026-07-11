@@ -138,20 +138,21 @@ Same in-process `Tool` pattern as `home-mcp`, behind an **injectable client seam
 *"תנקה כל יום בשמונה"*.
 - **Library / auth:** `python-roborock` (cloud + local; powers the Home Assistant integration — confirm current
   version at build time). Log in with the Roborock account; discover devices; supports MQTT (cloud) + local.
-- [ ] **Auth + device/map discovery:** log in, list devices, pull the home **map + room segmentation**; cache a
+- [x] **Auth + device/map discovery:** log in, list devices, pull the home **map + room segmentation**; cache a
   registry mapping **segment ids ↔ Hebrew room names** (סלון/מטבח/חדר שינה…), like `devices.yaml`. Deterministic
   registry; the model does the fuzzy room-name mapping (as with shopping `known_items`).
-- [ ] **Immediate control:** `start_clean` (whole home), `clean_rooms(rooms=[…])` (segment/room clean),
+- [x] **Immediate control:** `start_clean` (whole home), `clean_rooms(rooms=[…])` (segment/room clean),
   `pause`/`resume`/`stop`, `return_to_dock`, `locate`.
-- [ ] **Cleaning plan:** suction/fan power (quiet/balanced/turbo/max), mop water-flow level, and clean **order** —
+- [x] **Cleaning plan:** suction/fan power (quiet/balanced/turbo/max), mop water-flow level, and clean **order** —
   vacuum-only / mop-only / **vac-then-mop** (שאיבה ואז שטיפה) — settable per run and per room.
-- [ ] **Dock actions:** empty dust bin, wash mop, dry mop.
-- [ ] **Status:** `vacuum_status` → state, battery %, area/time cleaned, current room, error state.
-- [ ] **Scheduling:** one-off + recurring cleans — prefer the robot's own on-device schedules where supported
+- [x] **Dock actions:** empty dust bin, wash mop, dry mop.
+- [x] **Status:** `vacuum_status` → state, battery %, area/time cleaned, current room, error state.
+- [x] **Scheduling:** one-off + recurring cleans — prefer the robot's own on-device schedules where supported
   (offline-robust, like the SwitchBot on-device timers); otherwise route through `schedule_task`/cron (needs the box, per D3).
-- [ ] **Consumables (optional):** brush/filter/sensor life readouts → feed maintenance reminders.
+- [x] **Consumables (optional):** brush/filter/sensor life readouts → feed maintenance reminders.
 - **Notes:** cloud API ⇒ immediate control works without the box; only 24/7 cron scheduling needs it. Follows the
   BLE/vision testing convention — inject a **fake roborock client** (no network) mirroring `actuate_fn`/`write_fn`.
+- **Shipped:** cloud transport; local + true one-off scheduling deferred; live-verified pending.
 
 ## Epic I — Sensibo Sky AC control (`sensibo-mcp`)
 Stateful control of the **Sensibo Sky** (Wi-Fi IR controller for the AC) via its official cloud API — full

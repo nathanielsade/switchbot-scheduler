@@ -17,6 +17,7 @@ This file is the module map + the local recipes. Durable facts only (status → 
 | `home.py` | Home control (`build_home_tools`): `control_device` / `list_devices` / `battery_status`, wrapping `switchbot_scheduler.run_immediate`. `load_registry` / `load_home_tools`. Reports the user's *requested* action (inverted-safe). |
 | `schedule_store.py` + `schedules.py` | On-device Bot-timer scheduling: `ScheduleStore` (SQLite record = source of truth, Bots can't be read back) + `build_schedule_tools` (`schedule_device`/`get_schedule`/`cancel_schedule`). |
 | `shopping_store.py` + `shopping.py` | Shared shopping list: `ShoppingStore` (`items`/`list`/`purchases`, append-only) + `build_shopping_tools` (`show_list`/`add_to_list`/`remove_from_list`/`mark_bought`/`known_items`/`suggest_restock`/`purchase_history`). |
+| `roborock_rooms.py` + `roborock.py` | Roborock Q Revo vacuum control: `RoomRegistry`/`load_room_registry` (segment id ↔ Hebrew room name, mirrors `devices.yaml`) + `build_roborock_tools` (`list_rooms`/`clean`/`control_vacuum`/`dock_action`/`vacuum_status`/`consumables` + the schedule trio `schedule_clean`/`get_cleaning_schedule`/`cancel_cleaning_schedule`), behind an injectable `RoborockClient` seam (`load_roborock_client`) so tests stay offline. |
 
 ## Adding a new in-process tool
 

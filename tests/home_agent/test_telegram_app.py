@@ -83,3 +83,47 @@ def test_build_application_composes_shopping_tools(tmp_path, monkeypatch, make_f
                             conversation=Conversation(str(tmp_path / "m.db")))
     assert isinstance(app, Application)
     assert isinstance(seen.get("store"), ShoppingStore)   # shopping tools were composed
+
+
+def test_build_application_composes_roborock_tools_when_configured(tmp_path, monkeypatch, make_fake_client):
+    import home_agent.telegram_app as ta
+    from roborock_fakes import FakeRoborockClient   # sibling helper; tests/ has no __init__.py
+    from home_agent.roborock_rooms import Room, RoomRegistry
+    cfg = Config(openai_api_key="x", telegram_bot_token="123456:ABCdefGHIjklMNOpqrsTUVwxyz012345",
+                 allowed_chat_ids={1}, db_path=str(tmp_path / "m.db"),
+                 devices_path=str(tmp_path / "none.yaml"),
+                 roborock_username="u", roborock_password="p")
+    monkeypatch.setattr(ta, "load_roborock_client", lambda cfg: FakeRoborockClient())
+    monkeypatch.setattr(ta, "load_room_registry",
+                        lambda cfg: RoomRegistry([Room("kitchen", 17, ["מטבח"])]))
+    seen = {}
+    real = ta.build_roborock_tools
+
+    def spy(client, registry, **kw):
+        seen["client"] = client
+        seen["registry"] = registry
+        return real(client, registry, **kw)
+
+    monkeypatch.setattr(ta, "build_roborock_tools", spy)
+    app = build_application(cfg, client=make_fake_client([]),
+                            conversation=Conversation(str(tmp_path / "m.db")))
+    assert isinstance(app, Application)
+    assert isinstance(seen.get("client"), FakeRoborockClient)
+    assert isinstance(seen.get("registry"), RoomRegistry)
+
+
+def test_build_application_omits_roborock_tools_when_unconfigured(tmp_path, monkeypatch, make_fake_client):
+    import home_agent.telegram_app as ta
+    cfg = _cfg(tmp_path)  # no roborock_username/password set
+    called = {"count": 0}
+    real = ta.build_roborock_tools
+
+    def spy(*a, **kw):
+        called["count"] += 1
+        return real(*a, **kw)
+
+    monkeypatch.setattr(ta, "build_roborock_tools", spy)
+    app = build_application(cfg, client=make_fake_client([]),
+                            conversation=Conversation(str(tmp_path / "m.db")))
+    assert isinstance(app, Application)
+    assert called["count"] == 0   # tools not composed when no Roborock credentials configured

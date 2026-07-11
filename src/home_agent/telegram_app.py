@@ -10,6 +10,8 @@ from .gcal import build_calendar_tools, load_calendar_service
 from .home import build_home_tools, load_registry
 from .memory import Conversation
 from .prompts import FAMILY_SYSTEM_PROMPT
+from .roborock import build_roborock_tools, load_roborock_client
+from .roborock_rooms import load_room_registry
 from .schedule_store import ScheduleStore
 from .schedules import build_schedule_tools
 from .shopping import build_shopping_tools
@@ -100,6 +102,9 @@ def build_application(config, *, client=None, conversation=None):
         tools += build_schedule_tools(registry, ScheduleStore(config.db_path))
     else:
         log.warning("devices file not found at %s — home control + scheduling disabled", config.devices_path)
+    rr_client = load_roborock_client(config)
+    if rr_client is not None:
+        tools += build_roborock_tools(rr_client, load_room_registry(config))
     app = Application.builder().token(config.telegram_bot_token).build()
 
     async def on_message(update, context):
