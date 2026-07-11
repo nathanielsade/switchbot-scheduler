@@ -148,10 +148,68 @@ def _clean_impl(args, *, client, registry) -> str:
     return f"cleaning {target}{_describe_plan(mode, suction, water_flow)} ✅"
 
 
+_CONTROL_SCHEMA = {"type": "function", "function": {
+    "name": "control_vacuum",
+    "description": (
+        "Control the running vacuum: pause, resume, stop, return_to_dock (send it back to charge), "
+        "or locate (make it beep so you can find it). Report what you did, in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "action": {"type": "string",
+                   "enum": ["pause", "resume", "stop", "return_to_dock", "locate"]},
+    }, "required": ["action"], "additionalProperties": False},
+}}
+
+_DOCK_SCHEMA = {"type": "function", "function": {
+    "name": "dock_action",
+    "description": (
+        "Run a dock maintenance action while the vacuum is docked: empty_bin (empty the dust bin), "
+        "wash_mop (wash the mop pads), or dry_mop (dry them). Report back in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "action": {"type": "string", "enum": ["empty_bin", "wash_mop", "dry_mop"]},
+    }, "required": ["action"], "additionalProperties": False},
+}}
+
+_CONTROL_WORDS = {"pause": "paused", "resume": "resumed", "stop": "stopped",
+                  "return_to_dock": "returning to dock", "locate": "locating (beeping)"}
+_DOCK_WORDS = {"empty_bin": "emptying the bin", "wash_mop": "washing the mop", "dry_mop": "drying the mop"}
+
+
+def _control_impl(args, *, client) -> str:
+    action = (args.get("action") or "").strip().lower()
+    method = {"pause": client.pause, "resume": client.resume, "stop": client.stop,
+              "return_to_dock": client.return_to_dock, "locate": client.locate}.get(action)
+    if method is None:
+        return f"unknown action '{action}'. Use pause, resume, stop, return_to_dock, or locate."
+    try:
+        method()
+    except Exception as e:
+        return f"couldn't {action} — {e}"
+    return f"{_CONTROL_WORDS[action]} ✅"
+
+
+def _dock_impl(args, *, client) -> str:
+    action = (args.get("action") or "").strip().lower()
+    method = {"empty_bin": client.empty_bin, "wash_mop": client.wash_mop,
+              "dry_mop": client.dry_mop}.get(action)
+    if method is None:
+        return f"unknown action '{action}'. Use empty_bin, wash_mop, or dry_mop."
+    try:
+        method()
+    except Exception as e:
+        return f"couldn't {action} — {e}"
+    return f"{_DOCK_WORDS[action]} ✅"
+
+
 def build_roborock_tools(client, registry, *, now_fn=None) -> list[Tool]:
     return [
         Tool(name="list_rooms", schema=_LIST_ROOMS_SCHEMA,
              impl=lambda args: _list_rooms_impl(args, registry=registry)),
         Tool(name="clean", schema=_CLEAN_SCHEMA,
              impl=lambda args: _clean_impl(args, client=client, registry=registry)),
+        Tool(name="control_vacuum", schema=_CONTROL_SCHEMA,
+             impl=lambda args: _control_impl(args, client=client)),
+        Tool(name="dock_action", schema=_DOCK_SCHEMA,
+             impl=lambda args: _dock_impl(args, client=client)),
     ]

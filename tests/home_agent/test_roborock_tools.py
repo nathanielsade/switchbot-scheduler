@@ -75,3 +75,43 @@ def test_clean_reports_error_friendly():
     tools = build_roborock_tools(ExplodingRoborockClient(), _reg())
     out = _tool(tools, "clean").impl({})
     assert "offline" in out
+
+
+import pytest
+
+
+@pytest.mark.parametrize("action,method", [
+    ("pause", "pause"), ("resume", "resume"), ("stop", "stop"),
+    ("return_to_dock", "return_to_dock"), ("locate", "locate"),
+])
+def test_control_vacuum_dispatches(action, method):
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, _reg())
+    out = _tool(tools, "control_vacuum").impl({"action": action})
+    assert client.calls == [(method, {})]
+    assert "✅" in out
+
+
+def test_control_vacuum_unknown_action():
+    client = FakeRoborockClient()
+    out = _tool(build_roborock_tools(client, _reg()), "control_vacuum").impl({"action": "fly"})
+    assert client.calls == []
+    assert "fly" in out.lower()
+
+
+@pytest.mark.parametrize("action,method", [
+    ("empty_bin", "empty_bin"), ("wash_mop", "wash_mop"), ("dry_mop", "dry_mop"),
+])
+def test_dock_action_dispatches(action, method):
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, _reg())
+    out = _tool(tools, "dock_action").impl({"action": action})
+    assert client.calls == [(method, {})]
+    assert "✅" in out
+
+
+def test_dock_action_unknown():
+    client = FakeRoborockClient()
+    out = _tool(build_roborock_tools(client, _reg()), "dock_action").impl({"action": "polish"})
+    assert client.calls == []
+    assert "polish" in out.lower()
