@@ -202,6 +202,57 @@ def _dock_impl(args, *, client) -> str:
     return f"{_DOCK_WORDS[action]} ✅"
 
 
+_STATUS_SCHEMA = {"type": "function", "function": {
+    "name": "vacuum_status",
+    "description": (
+        "Report the vacuum's current state: what it's doing, battery %, area and time cleaned, "
+        "current room, and any error. Use when the user asks how the vacuum is doing or where it is. "
+        "Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}}
+
+_CONSUMABLES_SCHEMA = {"type": "function", "function": {
+    "name": "consumables",
+    "description": (
+        "Report remaining life of the vacuum's consumables (main brush, side brush, filter, "
+        "sensors) as a percentage. Use when the user asks about maintenance or whether parts need "
+        "replacing. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}}
+
+_CONSUMABLE_LABELS = {"main_brush": "main brush", "side_brush": "side brush",
+                      "filter": "filter", "sensor": "sensor"}
+
+
+def _status_impl(args, *, client, registry) -> str:
+    try:
+        s = client.status()
+    except Exception as e:
+        return f"couldn't read the vacuum status — {e}"
+    lines = [f"state: {s.get('state', 'unknown')}", f"battery: {s.get('battery', '?')}%"]
+    if s.get("cleaned_area"):
+        lines.append(f"cleaned area: {s['cleaned_area']} m²")
+    if s.get("clean_time"):
+        lines.append(f"clean time: {s['clean_time'] // 60} min")
+    seg = s.get("segment_id")
+    room = registry.name_for_segment(seg) if (registry is not None and seg is not None) else None
+    if room:
+        lines.append(f"current room: {room}")
+    if s.get("error"):
+        lines.append(f"error: {s['error']}")
+    return "\n".join(lines)
+
+
+def _consumables_impl(args, *, client) -> str:
+    try:
+        c = client.consumables()
+    except Exception as e:
+        return f"couldn't read consumables — {e}"
+    return "\n".join(f"{_CONSUMABLE_LABELS.get(k, k)}: {v}% remaining" for k, v in c.items())
+
+
 def build_roborock_tools(client, registry, *, now_fn=None) -> list[Tool]:
     return [
         Tool(name="list_rooms", schema=_LIST_ROOMS_SCHEMA,
@@ -212,4 +263,8 @@ def build_roborock_tools(client, registry, *, now_fn=None) -> list[Tool]:
              impl=lambda args: _control_impl(args, client=client)),
         Tool(name="dock_action", schema=_DOCK_SCHEMA,
              impl=lambda args: _dock_impl(args, client=client)),
+        Tool(name="vacuum_status", schema=_STATUS_SCHEMA,
+             impl=lambda args: _status_impl(args, client=client, registry=registry)),
+        Tool(name="consumables", schema=_CONSUMABLES_SCHEMA,
+             impl=lambda args: _consumables_impl(args, client=client)),
     ]

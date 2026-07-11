@@ -115,3 +115,29 @@ def test_dock_action_unknown():
     out = _tool(build_roborock_tools(client, _reg()), "dock_action").impl({"action": "polish"})
     assert client.calls == []
     assert "polish" in out.lower()
+
+
+def test_vacuum_status_summarizes_and_names_room():
+    client = FakeRoborockClient(status={
+        "state": "cleaning", "battery": 82, "cleaned_area": 12.5,
+        "clean_time": 600, "segment_id": 16, "error": None})
+    tools = build_roborock_tools(client, _reg())
+    out = _tool(tools, "vacuum_status").impl({})
+    assert ("status", {}) in client.calls
+    assert "cleaning" in out and "82" in out and "living_room" in out
+
+
+def test_vacuum_status_reports_error_field():
+    client = FakeRoborockClient(status={
+        "state": "error", "battery": 40, "cleaned_area": 0, "clean_time": 0,
+        "segment_id": None, "error": "stuck"})
+    out = _tool(build_roborock_tools(client, _reg()), "vacuum_status").impl({})
+    assert "stuck" in out
+
+
+def test_consumables_summarizes():
+    client = FakeRoborockClient(consumables={
+        "main_brush": 80, "side_brush": 65, "filter": 40, "sensor": 90})
+    out = _tool(build_roborock_tools(client, _reg()), "consumables").impl({})
+    assert "main brush" in out.lower() and "80" in out
+    assert "filter" in out.lower() and "40" in out
