@@ -1,4 +1,7 @@
 import logging
+import re
+
+from switchbot_scheduler.model import DAYS
 
 from .tools import Tool
 
@@ -113,6 +116,25 @@ def _describe_plan(mode, suction, water_flow) -> str:
     return f" ({', '.join(bits)})" if bits else ""
 
 
+def _resolve_rooms(rooms_spoken, registry):
+    """(segment_ids|None, names|None, error_message|None)."""
+    if not rooms_spoken:
+        return None, None, None
+    if registry is None:
+        return None, None, "no rooms are configured, so I can only clean the whole home."
+    segs, names, unknown = [], [], []
+    for spoken in rooms_spoken:
+        room = registry.resolve(spoken)
+        if room is None:
+            unknown.append(spoken)
+        else:
+            segs.append(room.segment_id); names.append(room.name)
+    if unknown:
+        return None, None, (f"unknown room(s): {', '.join(unknown)}. "
+                            f"I can clean: {', '.join(registry.known_names())}")
+    return segs, names, None
+
+
 def _clean_impl(args, *, client, registry) -> str:
     rooms_spoken = args.get("rooms") or []
     mode = args.get("mode")
@@ -125,22 +147,10 @@ def _clean_impl(args, *, client, registry) -> str:
         return f"unknown suction '{suction}'. Use one of: {', '.join(SUCTIONS)}."
     if water_flow is not None and water_flow not in WATER_FLOWS:
         return f"unknown water_flow '{water_flow}'. Use one of: {', '.join(WATER_FLOWS)}."
-    if rooms_spoken:
-        if registry is None:
-            return "no rooms are configured, so I can only clean the whole home. Say 'clean everything'."
-        segs, names, unknown = [], [], []
-        for spoken in rooms_spoken:
-            room = registry.resolve(spoken)
-            if room is None:
-                unknown.append(spoken)
-            else:
-                segs.append(room.segment_id); names.append(room.name)
-        if unknown:
-            return (f"unknown room(s): {', '.join(unknown)}. "
-                    f"I can clean: {', '.join(registry.known_names())}")
-        target, segment_ids = ", ".join(names), segs
-    else:
-        target, segment_ids = "the whole home", None
+    segment_ids, names, err = _resolve_rooms(rooms_spoken, registry)
+    if err:
+        return err
+    target = ", ".join(names) if names else "the whole home"
     try:
         client.clean(segment_ids, mode=mode, suction=suction, water_flow=water_flow, repeat=repeat)
     except Exception as e:
@@ -253,6 +263,119 @@ def _consumables_impl(args, *, client) -> str:
     return "\n".join(f"{_CONSUMABLE_LABELS.get(k, k)}: {v}% remaining" for k, v in c.items())
 
 
+_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+_DAY_WORDS = {"daily": list(DAYS), "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+              "weekends": ["sat", "sun"]}
+
+
+def _normalize_days(days):
+    result = []
+    for d in days:
+        key = str(d).strip().lower()
+        if key in _DAY_WORDS:
+            candidates = _DAY_WORDS[key]
+        elif key in DAYS:
+            candidates = [key]
+        else:
+            raise ValueError(f"unknown day '{d}'")
+        for c in candidates:
+            if c not in result:
+                result.append(c)
+    return result
+
+
+_SCHEDULE_CLEAN_SCHEMA = {"type": "function", "function": {
+    "name": "schedule_clean",
+    "description": (
+        "Program a RECURRING cleaning schedule into the vacuum itself (runs even if this computer is "
+        "off). `time` is 24-hour \"HH:MM\". `days` are the days it repeats (sun mon tue wed thu fri "
+        "sat, or the words daily/weekdays/weekends) — omit for every day. Omit `rooms` for the whole "
+        "home. `mode`/`suction`/`water_flow` set the cleaning plan. Report what you scheduled, in the "
+        "user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "time": {"type": "string", "description": "24-hour clock time, \"HH:MM\"."},
+        "days": {"type": "array", "items": {"type": "string"},
+                 "description": "Days to repeat; omit for daily."},
+        "rooms": {"type": "array", "items": {"type": "string"},
+                  "description": "Rooms to clean; omit for the whole home."},
+        "mode": {"type": "string", "enum": list(MODES)},
+        "suction": {"type": "string", "enum": list(SUCTIONS)},
+        "water_flow": {"type": "string", "enum": list(WATER_FLOWS)},
+    }, "required": ["time"], "additionalProperties": False},
+}}
+
+_GET_SCHEDULE_SCHEMA = {"type": "function", "function": {
+    "name": "get_cleaning_schedule",
+    "description": (
+        "List the vacuum's programmed cleaning schedules (each has an id, time, days, and target). "
+        "Use when the user asks what cleans are scheduled. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}}
+
+_CANCEL_SCHEDULE_SCHEMA = {"type": "function", "function": {
+    "name": "cancel_cleaning_schedule",
+    "description": (
+        "Cancel one programmed cleaning schedule by its id (from get_cleaning_schedule). Report in "
+        "the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "id": {"type": "string", "description": "The schedule id to cancel."},
+    }, "required": ["id"], "additionalProperties": False},
+}}
+
+
+def _schedule_clean_impl(args, *, client, registry) -> str:
+    time_str = (args.get("time") or "").strip()
+    if not _TIME_RE.match(time_str):
+        return f"invalid time '{time_str}'. Use 24-hour HH:MM, e.g. 08:00."
+    mode, suction, water_flow = args.get("mode"), args.get("suction"), args.get("water_flow")
+    for val, allowed, label in ((mode, MODES, "mode"), (suction, SUCTIONS, "suction"),
+                                (water_flow, WATER_FLOWS, "water_flow")):
+        if val is not None and val not in allowed:
+            return f"unknown {label} '{val}'. Use one of: {', '.join(allowed)}."
+    try:
+        days = _normalize_days(args.get("days") or ["daily"])
+    except ValueError as e:
+        return f"couldn't set the schedule: {e}"
+    segment_ids, names, err = _resolve_rooms(args.get("rooms") or [], registry)
+    if err:
+        return err
+    try:
+        client.set_timer(time=time_str, days=days, segment_ids=segment_ids,
+                         mode=mode, suction=suction, water_flow=water_flow)
+    except Exception as e:
+        return f"couldn't set the schedule — {e}"
+    target = ", ".join(names) if names else "the whole home"
+    return f"scheduled: clean {target} at {time_str} ({', '.join(days)}){_describe_plan(mode, suction, water_flow)} ✅"
+
+
+def _get_schedule_impl(args, *, client) -> str:
+    try:
+        timers = client.get_timers()
+    except Exception as e:
+        return f"couldn't read the schedule — {e}"
+    if not timers:
+        return "nothing scheduled."
+    lines = []
+    for t in timers:
+        state = "" if t.get("enabled", True) else " (disabled)"
+        lines.append(f"[{t['id']}] {t['time']} {', '.join(t.get('days', []))} — {t.get('target', 'whole home')}{state}")
+    return "\n".join(lines)
+
+
+def _cancel_schedule_impl(args, *, client) -> str:
+    timer_id = (args.get("id") or "").strip()
+    try:
+        ok = client.del_timer(timer_id)
+    except Exception as e:
+        return f"couldn't cancel — {e}"
+    if not ok:
+        return f"no schedule with id {timer_id} was found."
+    return f"cancelled schedule {timer_id} ✅"
+
+
 def build_roborock_tools(client, registry, *, now_fn=None) -> list[Tool]:
     return [
         Tool(name="list_rooms", schema=_LIST_ROOMS_SCHEMA,
@@ -267,4 +390,10 @@ def build_roborock_tools(client, registry, *, now_fn=None) -> list[Tool]:
              impl=lambda args: _status_impl(args, client=client, registry=registry)),
         Tool(name="consumables", schema=_CONSUMABLES_SCHEMA,
              impl=lambda args: _consumables_impl(args, client=client)),
+        Tool(name="schedule_clean", schema=_SCHEDULE_CLEAN_SCHEMA,
+             impl=lambda args: _schedule_clean_impl(args, client=client, registry=registry)),
+        Tool(name="get_cleaning_schedule", schema=_GET_SCHEDULE_SCHEMA,
+             impl=lambda args: _get_schedule_impl(args, client=client)),
+        Tool(name="cancel_cleaning_schedule", schema=_CANCEL_SCHEDULE_SCHEMA,
+             impl=lambda args: _cancel_schedule_impl(args, client=client)),
     ]
