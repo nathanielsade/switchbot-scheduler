@@ -204,3 +204,17 @@ def test_cancel_cleaning_schedule_unknown_id():
     client = FakeRoborockClient()
     out = _tool(build_roborock_tools(client, _reg()), "cancel_cleaning_schedule").impl({"id": "99"})
     assert "99" in out and "no" in out.lower()
+
+
+def test_normalize_days_unknown_raises():
+    from home_agent.roborock import _normalize_days
+    with pytest.raises(ValueError):
+        _normalize_days(["funday"])
+
+
+def test_normalize_days_dedups_across_tokens_in_first_seen_order():
+    from home_agent.roborock import _normalize_days
+    # a bare day before its containing word: deduped, first-seen order preserved
+    assert _normalize_days(["sat", "weekends"]) == ["sat", "sun"]
+    # word then an overlapping bare day: no duplicate
+    assert _normalize_days(["weekdays", "mon"]) == ["mon", "tue", "wed", "thu", "fri"]
