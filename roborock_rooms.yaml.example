@@ -1,5 +1,5 @@
 # Seed with `python scripts/roborock_discover.py` (prints current segment ids + names),
-# then add Hebrew aliases. Copy to roborock_rooms.yaml (git-ignored if it holds real ids).
+# then add Hebrew aliases. Copy to roborock_rooms.yaml (committed like devices.yaml; segment ids aren't secret).
 rooms:
   living_room:
     segment_id: 16
