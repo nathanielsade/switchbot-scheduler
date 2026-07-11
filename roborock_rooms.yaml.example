@@ -1,0 +1,12 @@
+# Seed with `python scripts/roborock_discover.py` (prints current segment ids + names),
+# then add Hebrew aliases. Copy to roborock_rooms.yaml (git-ignored if it holds real ids).
+rooms:
+  living_room:
+    segment_id: 16
+    aliases: ["סלון", "salon", "living room"]
+  kitchen:
+    segment_id: 17
+    aliases: ["מטבח", "kitchen"]
+  bedroom:
+    segment_id: 18
+    aliases: ["חדר שינה", "bedroom"]
