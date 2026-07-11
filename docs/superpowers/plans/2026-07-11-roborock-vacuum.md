@@ -470,7 +470,7 @@ Create `tests/home_agent/test_roborock_tools.py`:
 ```python
 from home_agent.roborock import build_roborock_tools
 from home_agent.roborock_rooms import Room, RoomRegistry
-from .roborock_fakes import FakeRoborockClient
+from roborock_fakes import FakeRoborockClient   # sibling helper; tests/ has no __init__.py (prepend import mode)
 
 
 def _reg():
@@ -668,7 +668,7 @@ def test_clean_rooms_without_registry_is_friendly():
 
 
 def test_clean_reports_error_friendly():
-    from .roborock_fakes import ExplodingRoborockClient
+    from roborock_fakes import ExplodingRoborockClient
     tools = build_roborock_tools(ExplodingRoborockClient(), _reg())
     out = _tool(tools, "clean").impl({})
     assert "offline" in out
@@ -1292,7 +1292,7 @@ Append to `tests/home_agent/test_telegram_app.py` (match the file's existing con
 def test_build_application_includes_roborock_tools_when_configured(monkeypatch, tmp_path):
     import home_agent.telegram_app as ta
     from home_agent.config import Config
-    from tests.home_agent.roborock_fakes import FakeRoborockClient
+    from roborock_fakes import FakeRoborockClient   # sibling helper; tests/ has no __init__.py
     from home_agent.roborock_rooms import Room, RoomRegistry
 
     monkeypatch.setattr(ta, "load_roborock_client", lambda cfg: FakeRoborockClient())
