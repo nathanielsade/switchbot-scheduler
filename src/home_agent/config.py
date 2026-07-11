@@ -7,6 +7,7 @@ DEFAULT_MODEL = "gpt-4o"
 DEFAULT_DB_PATH = "home_agent.db"
 DEFAULT_OPENAI_TIMEOUT = 60.0  # seconds; caps a hung request instead of the SDK's 600s default
 DEFAULT_DEVICES_PATH = "devices.yaml"
+DEFAULT_ROOMS_PATH = "roborock_rooms.yaml"
 
 
 @dataclass
@@ -21,6 +22,9 @@ class Config:
     google_sa_keyfile: str = ""
     calendar_ids: list[str] = field(default_factory=list)
     calendar_write_id: str = ""
+    roborock_username: str = ""
+    roborock_password: str = ""
+    roborock_rooms_path: str = DEFAULT_ROOMS_PATH
 
 
 def _parse_chat_ids(raw: str) -> set[int]:
@@ -50,4 +54,7 @@ def load_config(path: str | None = None) -> Config:
         google_sa_keyfile=os.environ.get("GOOGLE_SA_KEYFILE", ""),
         calendar_ids=cal_ids,
         calendar_write_id=os.environ.get("CALENDAR_WRITE_ID", "") or (cal_ids[0] if cal_ids else ""),
+        roborock_username=os.environ.get("ROBOROCK_USERNAME", ""),
+        roborock_password=os.environ.get("ROBOROCK_PASSWORD", ""),
+        roborock_rooms_path=os.environ.get("ROBOROCK_ROOMS", DEFAULT_ROOMS_PATH),
     )

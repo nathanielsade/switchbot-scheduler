@@ -63,3 +63,29 @@ def test_load_config_calendar_keys(tmp_path, monkeypatch):
     assert cfg.calendar_write_id == "fam@g.com"          # defaults to first
     monkeypatch.setenv("CALENDAR_WRITE_ID", "me@g.com")
     assert load_config(str(env)).calendar_write_id == "me@g.com"
+
+
+def test_load_config_reads_roborock_keys(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("ALLOWED_CHAT_IDS", "")
+    monkeypatch.setenv("ROBOROCK_USERNAME", "me@example.com")
+    monkeypatch.setenv("ROBOROCK_PASSWORD", "secret")
+    monkeypatch.setenv("ROBOROCK_ROOMS", "custom_rooms.yaml")
+    from home_agent.config import load_config
+    cfg = load_config()
+    assert cfg.roborock_username == "me@example.com"
+    assert cfg.roborock_password == "secret"
+    assert cfg.roborock_rooms_path == "custom_rooms.yaml"
+
+
+def test_load_config_roborock_defaults(monkeypatch):
+    for k in ("ROBOROCK_USERNAME", "ROBOROCK_PASSWORD", "ROBOROCK_ROOMS"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("ALLOWED_CHAT_IDS", "")
+    from home_agent.config import load_config
+    cfg = load_config()
+    assert cfg.roborock_username == "" and cfg.roborock_password == ""
+    assert cfg.roborock_rooms_path == "roborock_rooms.yaml"
