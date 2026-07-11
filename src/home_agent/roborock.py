@@ -82,8 +82,76 @@ def _list_rooms_impl(args, *, registry) -> str:
     return "\n".join(lines)
 
 
+_CLEAN_SCHEMA = {"type": "function", "function": {
+    "name": "clean",
+    "description": (
+        "Start the vacuum cleaning. Omit `rooms` to clean the WHOLE home; give one or more room "
+        "names/aliases (Hebrew or English) to clean just those rooms. `mode` sets vacuum / mop / "
+        "vac_and_mop (vacuum and mop); `suction` sets fan power; `water_flow` sets mop wetness. Call "
+        "list_rooms first if unsure of a room name. One plan applies to the whole run. Report what "
+        "you started, in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "rooms": {"type": "array", "items": {"type": "string"},
+                  "description": "Room names/aliases to clean; omit for the whole home."},
+        "mode": {"type": "string", "enum": list(MODES),
+                 "description": "vacuum, mop, or vac_and_mop (vacuum then mop / both)."},
+        "suction": {"type": "string", "enum": list(SUCTIONS), "description": "fan power."},
+        "water_flow": {"type": "string", "enum": list(WATER_FLOWS), "description": "mop water level."},
+        "repeat": {"type": "integer", "description": "times to repeat a room clean (default once)."},
+    }, "additionalProperties": False},
+}}
+
+_MODE_WORDS = {"vacuum": "vacuum", "mop": "mop", "vac_and_mop": "vacuum + mop"}
+
+
+def _describe_plan(mode, suction, water_flow) -> str:
+    bits = []
+    if mode: bits.append(_MODE_WORDS[mode])
+    if suction: bits.append(f"suction {suction}")
+    if water_flow: bits.append(f"water {water_flow}")
+    return f" ({', '.join(bits)})" if bits else ""
+
+
+def _clean_impl(args, *, client, registry) -> str:
+    rooms_spoken = args.get("rooms") or []
+    mode = args.get("mode")
+    suction = args.get("suction")
+    water_flow = args.get("water_flow")
+    repeat = args.get("repeat") or 1
+    if mode is not None and mode not in MODES:
+        return f"unknown mode '{mode}'. Use one of: {', '.join(MODES)}."
+    if suction is not None and suction not in SUCTIONS:
+        return f"unknown suction '{suction}'. Use one of: {', '.join(SUCTIONS)}."
+    if water_flow is not None and water_flow not in WATER_FLOWS:
+        return f"unknown water_flow '{water_flow}'. Use one of: {', '.join(WATER_FLOWS)}."
+    if rooms_spoken:
+        if registry is None:
+            return "no rooms are configured, so I can only clean the whole home. Say 'clean everything'."
+        segs, names, unknown = [], [], []
+        for spoken in rooms_spoken:
+            room = registry.resolve(spoken)
+            if room is None:
+                unknown.append(spoken)
+            else:
+                segs.append(room.segment_id); names.append(room.name)
+        if unknown:
+            return (f"unknown room(s): {', '.join(unknown)}. "
+                    f"I can clean: {', '.join(registry.known_names())}")
+        target, segment_ids = ", ".join(names), segs
+    else:
+        target, segment_ids = "the whole home", None
+    try:
+        client.clean(segment_ids, mode=mode, suction=suction, water_flow=water_flow, repeat=repeat)
+    except Exception as e:
+        return f"couldn't start cleaning — {e}"
+    return f"cleaning {target}{_describe_plan(mode, suction, water_flow)} ✅"
+
+
 def build_roborock_tools(client, registry, *, now_fn=None) -> list[Tool]:
     return [
         Tool(name="list_rooms", schema=_LIST_ROOMS_SCHEMA,
              impl=lambda args: _list_rooms_impl(args, registry=registry)),
+        Tool(name="clean", schema=_CLEAN_SCHEMA,
+             impl=lambda args: _clean_impl(args, client=client, registry=registry)),
     ]

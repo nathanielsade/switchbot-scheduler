@@ -25,3 +25,53 @@ def test_list_rooms_without_registry_is_friendly():
     tools = build_roborock_tools(FakeRoborockClient(), None)
     out = _tool(tools, "list_rooms").impl({})
     assert "no rooms" in out.lower()
+
+
+def test_clean_whole_home_when_no_rooms():
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, _reg())
+    out = _tool(tools, "clean").impl({})
+    assert client.calls == [("clean", dict(segment_ids=None, mode=None, suction=None,
+                                           water_flow=None, repeat=1))]
+    assert "whole home" in out and "✅" in out
+
+
+def test_clean_resolves_rooms_to_segments_with_plan():
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, _reg())
+    out = _tool(tools, "clean").impl(
+        {"rooms": ["סלון", "מטבח"], "mode": "vac_and_mop", "suction": "turbo"})
+    assert client.calls == [("clean", dict(segment_ids=[16, 17], mode="vac_and_mop",
+                                           suction="turbo", water_flow=None, repeat=1))]
+    assert "living_room" in out and "kitchen" in out
+
+
+def test_clean_unknown_room_refuses_without_calling():
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, _reg())
+    out = _tool(tools, "clean").impl({"rooms": ["garage"]})
+    assert client.calls == []
+    assert "garage" in out and "living_room" in out
+
+
+def test_clean_bad_mode_refuses_without_calling():
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, _reg())
+    out = _tool(tools, "clean").impl({"mode": "polish"})
+    assert client.calls == []
+    assert "polish" in out.lower()
+
+
+def test_clean_rooms_without_registry_is_friendly():
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, None)
+    out = _tool(tools, "clean").impl({"rooms": ["סלון"]})
+    assert client.calls == []
+    assert "whole home" in out.lower()
+
+
+def test_clean_reports_error_friendly():
+    from roborock_fakes import ExplodingRoborockClient
+    tools = build_roborock_tools(ExplodingRoborockClient(), _reg())
+    out = _tool(tools, "clean").impl({})
+    assert "offline" in out
