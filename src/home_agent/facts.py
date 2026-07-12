@@ -83,9 +83,34 @@ def _remember_impl(args, *, store, sender, now_fn) -> str:
     return f"remembered — {label}"
 
 
+_RECALL_SCHEMA = {"type": "function", "function": {
+    "name": "recall",
+    "description": (
+        "List everything you have been told to remember (family facts), newest first. Call this whenever "
+        "the user asks about something that might have been saved — where something is kept, a code, a "
+        "password, a date. When values conflict, prefer the most recent. Answer the user from what you find."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+
+def _format_fact(row) -> str:
+    label = f"{row['subject']} — {row['fact']}" if row.get("subject") else row["fact"]
+    author = row.get("author") or "unknown"
+    date = (row.get("created_at") or "")[:10]
+    return f"{label} ({author}, {date})"
+
+
+def _recall_impl(args, *, store) -> str:
+    rows = store.active()
+    if not rows:
+        return "I have not been told to remember anything yet."
+    return "\n".join(_format_fact(r) for r in rows)
+
+
 def build_memory_tools(store, *, sender, now_fn=None) -> list[Tool]:
     now_fn = now_fn or _now
     return [
         Tool(name="remember", schema=_REMEMBER_SCHEMA,
              impl=lambda a: _remember_impl(a, store=store, sender=sender, now_fn=now_fn)),
+        Tool(name="recall", schema=_RECALL_SCHEMA, impl=lambda a: _recall_impl(a, store=store)),
     ]
