@@ -31,9 +31,22 @@ def test_clean_whole_home_when_no_rooms():
     client = FakeRoborockClient()
     tools = build_roborock_tools(client, _reg())
     out = _tool(tools, "clean").impl({})
-    assert client.calls == [("clean", dict(segment_ids=None, mode=None, suction=None,
+    # No mode given -> defaults to vac_and_mop ("שאיבה ואז שטיפה").
+    assert client.calls == [("clean", dict(segment_ids=None, mode="vac_and_mop", suction=None,
                                            water_flow=None, repeat=1))]
     assert "whole home" in out and "✅" in out
+
+
+def test_clean_defaults_to_vac_and_mop_but_explicit_mode_wins():
+    client = FakeRoborockClient()
+    tools = build_roborock_tools(client, _reg())
+    # explicit vacuum-only overrides the default
+    _tool(tools, "clean").impl({"rooms": ["סלון"], "mode": "vacuum"})
+    assert client.calls[-1] == ("clean", dict(segment_ids=[16], mode="vacuum", suction=None,
+                                              water_flow=None, repeat=1))
+    # omitted mode -> vac_and_mop default
+    _tool(tools, "clean").impl({"rooms": ["סלון"]})
+    assert client.calls[-1][1]["mode"] == "vac_and_mop"
 
 
 def test_clean_resolves_rooms_to_segments_with_plan():
@@ -149,7 +162,7 @@ def test_schedule_clean_daily_whole_home():
     out = _tool(tools, "schedule_clean").impl({"time": "08:00"})
     assert client.calls == [("set_timer", dict(
         time="08:00", days=["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
-        segment_ids=None, mode=None, suction=None, water_flow=None))]
+        segment_ids=None, mode="vac_and_mop", suction=None, water_flow=None))]
     assert "08:00" in out and "✅" in out
 
 

@@ -10,6 +10,8 @@ log = logging.getLogger("home_agent")
 MODES = ("vacuum", "mop", "vac_and_mop")
 SUCTIONS = ("quiet", "balanced", "turbo", "max")
 WATER_FLOWS = ("low", "medium", "high")
+# Default cleaning program when the user doesn't specify one — vacuum-and-mop ("שאיבה ואז שטיפה").
+DEFAULT_CLEAN_MODE = "vac_and_mop"
 
 
 def load_roborock_client(config):
@@ -239,16 +241,18 @@ _CLEAN_SCHEMA = {"type": "function", "function": {
     "name": "clean",
     "description": (
         "Start the vacuum cleaning. Omit `rooms` to clean the WHOLE home; give one or more room "
-        "names/aliases (Hebrew or English) to clean just those rooms. `mode` sets vacuum / mop / "
-        "vac_and_mop (vacuum and mop); `suction` sets fan power; `water_flow` sets mop wetness. Call "
-        "list_rooms first if unsure of a room name. One plan applies to the whole run. Report what "
-        "you started, in the user's language."
+        "names/aliases (Hebrew or English) to clean just those rooms. `suction` sets fan power; "
+        "`water_flow` sets mop wetness. Call list_rooms first if unsure of a room name. One plan "
+        "applies to the whole run. Report what you started, in the user's language. "
+        "IMPORTANT: leave `mode` unset by default — the default program is vacuum-and-mop "
+        "(שאיבה ואז שטיפה). Only set `mode` when the user explicitly asks for vacuum-only "
+        "(שאיבה) or mop-only (שטיפה)."
     ),
     "parameters": {"type": "object", "properties": {
         "rooms": {"type": "array", "items": {"type": "string"},
                   "description": "Room names/aliases to clean; omit for the whole home."},
         "mode": {"type": "string", "enum": list(MODES),
-                 "description": "vacuum, mop, or vac_and_mop (vacuum then mop / both)."},
+                 "description": "vacuum (only) / mop (only) / vac_and_mop. OMIT for the default vac_and_mop."},
         "suction": {"type": "string", "enum": list(SUCTIONS), "description": "fan power."},
         "water_flow": {"type": "string", "enum": list(WATER_FLOWS), "description": "mop water level."},
         "repeat": {"type": "integer", "description": "times to repeat a room clean (default once)."},
@@ -297,6 +301,7 @@ def _clean_impl(args, *, client, registry) -> str:
         return f"unknown suction '{suction}'. Use one of: {', '.join(SUCTIONS)}."
     if water_flow is not None and water_flow not in WATER_FLOWS:
         return f"unknown water_flow '{water_flow}'. Use one of: {', '.join(WATER_FLOWS)}."
+    mode = mode or DEFAULT_CLEAN_MODE   # default program: vacuum-and-mop unless the user asked otherwise
     segment_ids, names, err = _resolve_rooms(rooms_spoken, registry)
     if err:
         return err
@@ -485,6 +490,7 @@ def _schedule_clean_impl(args, *, client, registry) -> str:
                                 (water_flow, WATER_FLOWS, "water_flow")):
         if val is not None and val not in allowed:
             return f"unknown {label} '{val}'. Use one of: {', '.join(allowed)}."
+    mode = mode or DEFAULT_CLEAN_MODE   # default program: vacuum-and-mop unless the user asked otherwise
     try:
         days = _normalize_days(args.get("days") or ["daily"])
     except ValueError as e:
