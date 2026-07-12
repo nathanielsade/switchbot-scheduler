@@ -18,7 +18,7 @@ then a TDD plan at build time. This file is the map; the session todo list track
 2. ⬜ **Infra / home box** — Linux + BlueZ + systemd + re-scan Bots (overlaps #1) ← **NEXT**
 3. ✅ **home-mcp** — wrap the existing scheduler code. DONE & FULLY VERIFIED LIVE 2026-07-09: in-process tools `control_device`/`list_devices`/`battery_status`, merged to main, 123 tests. Real Telegram message flipped the kitchen+living-room Bots; battery_status returned real values (battery byte index 1 confirmed on hardware). Built ahead of #2 (Infra) since it's pure software. (`docs/superpowers/plans/2026-07-09-home-mcp-control-tools.md`)
 4. ⬜ **family-mcp** — reminders + shopping + calendar + `schedule_task`/memory
-5. ⬜ **finance-mcp** — Firefly + bank scrapers + weekly summary (read-only)
+5. ⬜ **finance-mcp** — Discount scraper → local SQLite → in-agent Q&A + weekly summary (read-only)
 6. ⬜ **payslips** (vision)
 7. ⬜ **Israeli live-price layer**
 8. ⬜ **Roborock vacuum control** (`roborock-mcp`) — full control of the Q Revo: rooms, vac/mop plan, scheduling. Pure software (cloud API); 24/7 schedules want the box.
@@ -48,7 +48,7 @@ OpenAI API — function-calling loop (agentic), model gpt-4o
       │  standing system prompt = family context (auto prompt-cached)
       ├── home-mcp     (AC, lights, scenes)      ← wraps our existing code
       ├── family-mcp   (calendar, reminders, shopping list, shared memory)
-      └── finance-mcp  (wrapper over Firefly III)
+      └── finance-mcp  (Discount scraper → local SQLite store, read-only)
   + SQLite (conversation/shared memory, shopping history, payslips)
   + cron  (schedule_task tool → future runs of the agent)
 ```
@@ -109,11 +109,19 @@ The brain transplant + interface. **Build order step 1.**
 - [ ] `schedule_task(cron, prompt)` tool → writes a cron entry that re-invokes the agent with that prompt (the FULL/flexible path: reminders, messages, "every day at sunset", conditional). Needs the always-on box (Epic 2). Complements the on-device-timer path above.
 - ✅ **Shared memory SHIPPED 2026-07-12** (merged to main, 248 tests): `remember`/`recall`/`forget` over an append-only `FactStore` (SQLite, connection-per-op) in `src/home_agent/facts.py`. Explicit-only capture; recall returns all active facts newest-first and the model reasons over them (Approach A); forget flips a status (reversible), retiring one match / listing several / friendly on none; each fact records the author (per-turn `sender`) + timestamp. Tools built per-turn in `handle_message`; store created once at startup. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-12-shared-memory*`. Fully offline-tested; ready for live Telegram smoke (no box needed).
 
-## Epic E — finance-mcp (Firefly III + bank importer)
-**Build order step 5.** Read-only. OpenAI is the insight layer.
-- [ ] **Firefly III** self-hosted (Docker) on the home box; category rule engine ("שופרסל" → groceries).
-- [ ] **`israeli-bank-scrapers`** nightly cron (all major IL banks/cards incl. 2FA) → importer → Firefly.
-- [ ] **`firefly-iii-mcp`** (existing OSS, via `npx`) → agent queries transactions/budgets/insights.
+## Epic E — finance-mcp (Discount scraper → local SQLite)
+**Build order step 5.** Read-only. OpenAI is the insight layer. **Scope revised 2026-07-12** (see
+`docs/superpowers/specs/2026-07-12-finance-discount-design.md`): dropped the self-hosted **Firefly III**
+(Docker service + `firefly-iii-mcp`) in favour of a **lightweight local SQLite store** owned by the agent —
+simpler, consistent with our other stores, and fully offline-testable. **Discount-only** to start (the one
+audited scraper adapter); more banks/cards are a later add.
+- [ ] **Node collector** pinning `israeli-bank-scrapers` (Discount only, read-only) → prints transactions as
+  JSON → a Python importer upserts into a local SQLite `finance_store` (money as **integer agorot**; dedup by
+  `(source, account, identifier)` with a normalized-fields hash fallback). Nightly on the box; run under an
+  **egress allow-list to `start.telebank.co.il`** + pinned version.
+- [ ] **In-agent tools** (no external MCP): `sync_finances`, `financial_summary`, `find_transactions`,
+  `spending_by_category`, `set_category_rule`, `cash_flow_forecast` — categories **derived at read time** from
+  `category_rules` (model classifies new merchants + persists a rule, like shopping `known_items`).
 - [ ] Family financial context in the system prompt (income, savings goals, "unusual for us", trailing-3-month comparisons).
 - [ ] Free-text Q&A ("eating out this month vs average?"), anomaly detection (duplicate charges, subscription creep).
 - [ ] **Weekly summary**: Sunday 08:00 cron → agent "analyze the week" (pulls via MCP) → posts to Telegram.
