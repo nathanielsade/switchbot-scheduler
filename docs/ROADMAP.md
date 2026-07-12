@@ -152,7 +152,12 @@ Same in-process `Tool` pattern as `home-mcp`, behind an **injectable client seam
 - [x] **Consumables (optional):** brush/filter/sensor life readouts → feed maintenance reminders.
 - **Notes:** cloud API ⇒ immediate control works without the box; only 24/7 cron scheduling needs it. Follows the
   BLE/vision testing convention — inject a **fake roborock client** (no network) mirroring `actuate_fn`/`write_fn`.
-- **Shipped:** cloud transport; local + true one-off scheduling deferred; live-verified pending.
+- **Shipped:** cloud (MQTT) transport, python-roborock 5.x, token-file auth (`scripts/roborock_login.py`).
+  **Live-verified 2026-07-12** on "Roborock Qrevo Edge Series" (a187): list_rooms, vacuum_status,
+  consumables, locate, `clean(סלון)` segment clean, return_to_dock — all confirmed on the physical robot.
+  Deferred: local (LAN) transport; per-room plans; recurring **server-timer scheduling** (`set_timer`
+  raises a friendly error for now — route via cron/box later); consumable %s are estimates vs. standard
+  lifetimes.
 
 ## Epic I — Sensibo Sky AC control (`sensibo-mcp`)
 Stateful control of the **Sensibo Sky** (Wi-Fi IR controller for the AC) via its official cloud API — full
