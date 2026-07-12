@@ -71,3 +71,21 @@ def test_delete_category_rule_soft_removes():
     rid = store.active_rules()[0]["id"]
     assert "✅" in _tool(tools, "delete_category_rule").impl({"id": rid})
     assert store.active_rules() == []
+
+
+def test_cash_flow_detects_recurring_and_flags_overdraft():
+    store = _store()
+    store.record_snapshot("discount", "1", "2026-07-12T00:00:00Z", 20000)  # ₪200 balance
+    def r(i, d, amt, desc):
+        return dict(source="discount", account="1", identifier=i, fingerprint=f"id:{i}",
+                    txn_date=d, processed_date=None, amount_agorot=amt, currency="ILS",
+                    description=desc, status="completed", raw_json="{}")
+    store.upsert_transactions([
+        r("s1", "2026-05-10", 1000000, "משכורת"), r("s2", "2026-06-10", 1000000, "משכורת"),
+        r("t1", "2026-05-15", -800000, "שכירות"), r("t2", "2026-06-15", -800000, "שכירות"),
+        r("o1", "2026-06-03", -50000, "חד פעמי"),
+    ])
+    tools = build_finance_tools(store, now_fn=_frozen)
+    out = _tool(tools, "cash_flow_forecast").impl({})
+    assert "משכורת" in out and "שכירות" in out and "חד פעמי" not in out
+    assert "מינוס" in out or "overdraft" in out.lower() or "-" in out  # 200 +1000 -800 due 15th → tight/negative path

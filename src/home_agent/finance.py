@@ -262,6 +262,58 @@ def _del_rule_impl(args, *, store) -> str:
     return f"כלל {args.get('id')} הוסר ✅" if ok else f"לא נמצא כלל פעיל עם מזהה {args.get('id')}."
 
 
+def _detect_recurring(txns):
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for t in txns:
+        groups[(_norm_desc(t["description"]), 1 if t["amount_agorot"] > 0 else -1)].append(t)
+    recurring = []
+    for (desc, sign), items in groups.items():
+        months = {t["txn_date"][:7] for t in items}
+        if len(months) < 2:
+            continue
+        days = [int(t["txn_date"][8:10]) for t in items]
+        amts = [abs(t["amount_agorot"]) for t in items]
+        if max(days) - min(days) > 3:
+            continue
+        typical = sorted(amts)[len(amts) // 2]
+        if typical and (max(amts) - min(amts)) / typical > 0.10:
+            continue
+        occ = len(months)
+        recurring.append({"description": items[-1]["description"], "sign": sign,
+                          "amount_agorot": sign * typical, "day": round(sum(days) / len(days)),
+                          "occurrences": occ, "confidence": "high" if occ >= 3 else "medium"})
+    return recurring
+
+
+_FORECAST_SCHEMA = {"type": "function", "function": {
+    "name": "cash_flow_forecast",
+    "description": (
+        "Forecast end-of-month balance from current balance + detected recurring income/expenses, and flag "
+        "a likely overdraft. Returns the projection AND the detected recurring items (with confidence) so you "
+        "can explain the assumptions. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+
+def _forecast_impl(args, *, store, now_fn) -> str:
+    now = now_fn()
+    lookback = (now.date() - timedelta(days=95)).isoformat()
+    recurring = _detect_recurring(store.transactions_between(lookback, now.date().isoformat()))
+    balance = store.current_balance_agorot()
+    day = now.day
+    remaining = sum(r["amount_agorot"] for r in recurring if r["day"] >= day)
+    projected = balance + remaining
+    lines = [f"יתרה נוכחית: {_shekels(balance)}",
+             f"צפי לסוף החודש: {_shekels(projected)}" + (" ⚠️ צפוי מינוס" if projected < 0 else "")]
+    if recurring:
+        lines.append("פריטים קבועים שזוהו:")
+        for r in recurring:
+            lines.append(f"  {r['description']}: {_shekels(r['amount_agorot'])} (~יום {r['day']}, "
+                         f"{r['occurrences']} חודשים, ביטחון {r['confidence']})")
+    return "\n".join(lines)
+
+
 def build_finance_tools(store, *, now_fn=None, fetch_fn=None):
     now_fn = now_fn or _now
     return [
@@ -279,6 +331,8 @@ def build_finance_tools(store, *, now_fn=None, fetch_fn=None):
              impl=lambda a: _list_rules_impl(a, store=store)),
         Tool(name="delete_category_rule", schema=_DEL_RULE_SCHEMA,
              impl=lambda a: _del_rule_impl(a, store=store)),
+        Tool(name="cash_flow_forecast", schema=_FORECAST_SCHEMA,
+             impl=lambda a: _forecast_impl(a, store=store, now_fn=now_fn)),
     ]
 
 
