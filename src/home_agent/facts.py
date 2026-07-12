@@ -42,11 +42,15 @@ class FactStore:
             return self._rows(conn, "", ())
 
     def find_active(self, query) -> list[dict]:
-        like = f"%{query}%"
+        # Escape LIKE wildcards so a query containing % or _ (or the escape char) matches
+        # literally instead of broadening the match.
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
         with closing(sqlite3.connect(self.db_path)) as conn:
             return self._rows(
                 conn,
-                " AND (subject LIKE ? COLLATE NOCASE OR fact LIKE ? COLLATE NOCASE)",
+                " AND (subject LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                "OR fact LIKE ? ESCAPE '\\' COLLATE NOCASE)",
                 (like, like),
             )
 

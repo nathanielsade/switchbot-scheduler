@@ -24,6 +24,17 @@ def test_find_active_matches_subject_and_fact_case_insensitive(tmp_path):
     assert s.find_active("nonexistent") == []
 
 
+def test_find_active_treats_like_wildcards_literally(tmp_path):
+    s = _store(tmp_path)
+    s.add("discount", "50% off milk", "נתנאל", "t1")
+    s.add("gate code", "1234", "נתנאל", "t2")
+    # '%' must match literally, not as a wildcard: it finds the discount fact, not everything.
+    assert [r["subject"] for r in s.find_active("50%")] == ["discount"]
+    # '_' must match literally too — no active fact contains a literal underscore, so no matches
+    # (a raw LIKE '_' would match any single char and wrongly return rows).
+    assert s.find_active("gate_code") == []
+
+
 def test_forget_flips_status_and_is_idempotent(tmp_path):
     s = _store(tmp_path)
     fid = s.add("gate code", "1234", "נתנאל", "t1")
