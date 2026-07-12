@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import closing
+from datetime import datetime
 
 from .tools import Tool
 
@@ -53,3 +54,38 @@ class FactStore:
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("UPDATE facts SET status='forgotten' WHERE id=?", (fact_id,))
             conn.commit()
+
+
+def _now():
+    return datetime.now().astimezone()
+
+
+_REMEMBER_SCHEMA = {"type": "function", "function": {
+    "name": "remember",
+    "description": (
+        "Store a durable family fact, ONLY when the user explicitly asks you to remember something "
+        "(e.g. 'תזכור ש…', 'remember that…'). Never store facts on your own initiative. Give a short "
+        "'subject' label (e.g. 'gate code', 'passports') and the 'fact' detail. Report back briefly."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "subject": {"type": "string", "description": "A short label for the fact, e.g. 'gate code', 'passports'."},
+        "fact": {"type": "string", "description": "The detail to remember, e.g. 'in the safe', 'the code is five six seven eight'."},
+    }, "required": ["subject", "fact"], "additionalProperties": False}}}
+
+
+def _remember_impl(args, *, store, sender, now_fn) -> str:
+    subject = (args.get("subject") or "").strip()
+    fact = (args.get("fact") or "").strip()
+    if not fact:
+        return "there was nothing to remember — tell me the detail."
+    store.add(subject, fact, sender, now_fn().isoformat())
+    label = f"{subject}: {fact}" if subject else fact
+    return f"remembered — {label}"
+
+
+def build_memory_tools(store, *, sender, now_fn=None) -> list[Tool]:
+    now_fn = now_fn or _now
+    return [
+        Tool(name="remember", schema=_REMEMBER_SCHEMA,
+             impl=lambda a: _remember_impl(a, store=store, sender=sender, now_fn=now_fn)),
+    ]
