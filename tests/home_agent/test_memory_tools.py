@@ -56,3 +56,32 @@ def test_recall_takes_no_arguments(tmp_path):
     tools = build_memory_tools(store, sender="נתנאל", now_fn=_frozen())
     props = _tool(tools, "recall").schema["function"]["parameters"]["properties"]
     assert props == {}
+
+
+def test_forget_single_match_retires_it(tmp_path):
+    store = FactStore(str(tmp_path / "facts.db"))
+    store.add("gate code", "1234", "נתנאל", "t1")
+    store.add("passports", "in the safe", "שרי", "t2")
+    tools = build_memory_tools(store, sender="נתנאל", now_fn=_frozen())
+    out = _tool(tools, "forget").impl({"query": "gate"})
+    assert "gate code" in out
+    assert [r["subject"] for r in store.active()] == ["passports"]  # only the match was retired
+
+
+def test_forget_several_matches_retires_nothing_and_lists(tmp_path):
+    store = FactStore(str(tmp_path / "facts.db"))
+    store.add("gate code", "1234", "נתנאל", "t1")
+    store.add("alarm code", "9999", "נתנאל", "t2")
+    tools = build_memory_tools(store, sender="נתנאל", now_fn=_frozen())
+    out = _tool(tools, "forget").impl({"query": "code"})
+    assert "gate code" in out and "alarm code" in out    # lists both
+    assert len(store.active()) == 2                       # nothing retired — ambiguous
+
+
+def test_forget_no_match_is_friendly(tmp_path):
+    store = FactStore(str(tmp_path / "facts.db"))
+    store.add("gate code", "1234", "נתנאל", "t1")
+    tools = build_memory_tools(store, sender="נתנאל", now_fn=_frozen())
+    out = _tool(tools, "forget").impl({"query": "nonexistent"})
+    assert "nothing" in out.lower()
+    assert len(store.active()) == 1   # untouched

@@ -107,10 +107,36 @@ def _recall_impl(args, *, store) -> str:
     return "\n".join(_format_fact(r) for r in rows)
 
 
+_FORGET_SCHEMA = {"type": "function", "function": {
+    "name": "forget",
+    "description": (
+        "Retire a stored fact when the user explicitly asks to forget something (e.g. 'תשכח את קוד השער'). "
+        "Pass a 'query' describing what to forget. If exactly one stored fact matches, it is retired; if "
+        "several match, none are retired and they are listed so you can ask the user which one; if none "
+        "match, you are told so. Retired facts stop appearing but are recoverable."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "What to forget, e.g. 'gate code', 'the passports'."},
+    }, "required": ["query"], "additionalProperties": False}}}
+
+
+def _forget_impl(args, *, store) -> str:
+    query = (args.get("query") or "").strip()
+    matches = store.find_active(query) if query else []
+    if not matches:
+        return f"nothing matching '{query}' to forget."
+    if len(matches) > 1:
+        listed = "\n".join(_format_fact(m) for m in matches)
+        return f"several facts match '{query}' — which one should I forget?\n{listed}"
+    store.forget(matches[0]["id"])
+    return f"forgot — {_format_fact(matches[0])}"
+
+
 def build_memory_tools(store, *, sender, now_fn=None) -> list[Tool]:
     now_fn = now_fn or _now
     return [
         Tool(name="remember", schema=_REMEMBER_SCHEMA,
              impl=lambda a: _remember_impl(a, store=store, sender=sender, now_fn=now_fn)),
         Tool(name="recall", schema=_RECALL_SCHEMA, impl=lambda a: _recall_impl(a, store=store)),
+        Tool(name="forget", schema=_FORGET_SCHEMA, impl=lambda a: _forget_impl(a, store=store)),
     ]
