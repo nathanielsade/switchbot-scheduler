@@ -181,7 +181,8 @@ def _find_impl(args, *, store) -> str:
                         direction=args.get("direction"), query=args.get("query"))
     if not rows:
         return "לא נמצאו תנועות תואמות."
-    return "\n".join(f"{r['txn_date']}  {r['description']}  {_shekels(r['amount_agorot'])}  ({r['status']})"
+    rules = store.active_rules()
+    return "\n".join(f"{r['txn_date']}  {r['description']}  {_shekels(r['amount_agorot'])}  ({r['status']})  [{_categorize(r['description'], rules) or '—'}]"
                      for r in rows)
 
 
@@ -358,5 +359,5 @@ def make_collector_fetch(config):
                                   text=True, env=env, timeout=180, shell=False)
         if proc.returncode != 0 or not proc.stdout.strip():
             raise RuntimeError(f"collector failed (rc={proc.returncode})")  # stderr NOT surfaced
-        return json.loads(proc.stdout)
+        return json.loads(proc.stdout, parse_float=Decimal)
     return _fetch

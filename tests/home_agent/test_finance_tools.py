@@ -38,8 +38,15 @@ def test_financial_summary_period_shortcut():
 
 def test_find_transactions_absolute_amount():
     store, tools = _seeded()
+    # Before setting a rule, category should appear as "—" (uncategorized)
     out = _tool(tools, "find_transactions").impl({"min_abs_agorot": 45000, "max_abs_agorot": 45000})
     assert "שופרסל" in out and "משכורת" not in out
+    assert "[—]" in out  # uncategorized
+
+    # After setting a rule, the derived category should appear
+    _tool(tools, "set_category_rule").impl({"merchant_pattern": "שופרסל", "category": "groceries"})
+    out = _tool(tools, "find_transactions").impl({"min_abs_agorot": 45000, "max_abs_agorot": 45000})
+    assert "שופרסל" in out and "[groceries]" in out
 
 
 def test_spending_by_category_derives_and_surfaces_uncategorized():
