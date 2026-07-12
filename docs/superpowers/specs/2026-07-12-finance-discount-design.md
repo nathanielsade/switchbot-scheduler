@@ -30,12 +30,59 @@ column exists, unused in v1); an append-only **audit** table (see "Durability").
   `category_rules` (schema below). Owns all writes (single writer).
 - **`finance.py`** — `build_finance_tools(store, *, now_fn=None, fetch_fn=None) -> list[Tool]`;
   `load_finance_config(config)`. The **injectable seam is `fetch_fn`** — real = runs the Node collector and
-  parses its JSON; **fake in tests = returns a canned dict** (no Node, no bank, no network).
-- **`collector/scrape_discount.js`** + **`collector/package.json`** — the only Node code: pinned
-  `israeli-bank-scrapers`, reads `DISCOUNT_*` from env, prints transactions as JSON to **stdout only**, logs
-  to stderr, exits. Nothing else.
+  parses its JSON (the **Collector JSON contract** below); **fake in tests = returns a canned dict of exactly
+  that contract shape** (no Node, no bank, no network). Because the contract is pinned, offline tests exercise
+  the same shape the real collector emits.
+- **`collector/scrape_discount.js`** + **`collector/package.json`** + **`collector/package-lock.json`** — the
+  only Node code: reads `DISCOUNT_*` from env, calls `israeli-bank-scrapers` (Discount), prints the contract
+  JSON to **stdout only**, logs to stderr, exits. Dependencies are **pinned via a committed
+  `package-lock.json` and installed with `npm ci`** (exact transitive tree — direct-pin alone allows
+  transitive drift). The real `fetch_fn` resolves the script path **relative to the repo/package root** (not
+  the process CWD, so it survives systemd) and runs it with **`shell=False`, argv list** (`["node", <abs
+  script>]`) — never a shell string.
 - **Wiring** (`telegram_app.build_application`): build the store + tools once at startup **iff** Discount is
   configured; otherwise the finance tools simply don't load (bot still runs). Chat-agnostic → no per-turn binding.
+
+## Collector JSON contract
+
+The single canonical shape the collector prints and `fetch_fn` returns — **the fake in tests emits exactly
+this**, so offline tests can't pass against a shape the real collector never produces. Amounts here are the
+**shekel values the scraper provides** (signed: negative = debit/expense, positive = credit/income); the
+**Python importer** does all normalization (→agorot, →ISO date, →lowercase status), which keeps that logic
+offline-testable.
+
+```json
+{
+  "source": "discount",
+  "scraped_at": "2026-07-12T18:30:00+03:00",
+  "accounts": [
+    {
+      "account": "12345",                 // scraper accountNumber, as string
+      "balance": 12345.67,                // account balance in shekels (signed)
+      "transactions": [
+        {
+          "identifier": "987654",         // bank txn id as string, or null when absent
+          "date": "2026-07-01T00:00:00.000Z",   // scraper ISO datetime
+          "processedDate": "2026-07-02T00:00:00.000Z", // or null
+          "chargedAmount": -450.00,       // shekels, SIGNED (− expense / + income)
+          "chargedCurrency": "ILS",       // → currency (default ILS if missing)
+          "description": "שופרסל דיל",
+          "status": "completed"           // "completed" | "pending"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Importer normalization rules (Python, tested):**
+- `chargedAmount` (shekels, signed) → `amount_agorot = round(chargedAmount * 100)` (int; sign preserved:
+  **− expense / + income**). `balance` → `balance_snapshot_agorot` the same way.
+- `date`/`processedDate` (ISO datetime) → `txn_date`/`processed_date` as `YYYY-MM-DD` (date-only).
+- `status` → lowercased `completed`/`pending`; `chargedCurrency` → `currency` (default `ILS`).
+- `account` → `account`; `identifier` (string|null) drives the fingerprint (below).
+- Unknown/extra fields are ignored; a missing required field (amount/date/description) drops that row and is
+  counted, not fatal.
 
 ## Data model
 
@@ -91,11 +138,15 @@ time.
 | `created_at` | TEXT | ISO |
 
 **Read-time category of a transaction** = `category_override` if set, else the **matching rule** by
-precedence, else `"other"`. **Rule precedence: longest `merchant_pattern` wins; ties broken by newest
-(highest `id`).** Deriving is pure SQL/Python — deterministic, no model, no backfill.
+precedence, else **`NULL` = *uncategorized*** (a distinct state — *not* `"other"`). **Rule precedence: longest
+`merchant_pattern` wins; ties broken by newest (highest `id`).** Deriving is pure SQL/Python — deterministic,
+no model, no backfill. Keeping uncategorized as `NULL` preserves the "no rule matched" signal that
+`spending_by_category` needs to surface; **`"other"` is just one assignable slug** you reach by an explicit
+rule, meaning "categorized, and it's miscellaneous" — the two must not be conflated.
 
 **Canonical category slugs (fixed set):** `groceries, rent, salary, utilities, transport, health,
 restaurants, subscriptions, shopping, cash, transfer, other`. `set_category_rule` rejects anything else.
+`"other"` is an explicit choice; *uncategorized* is the absence of any rule (`NULL`).
 
 ## The six tools
 
@@ -103,18 +154,25 @@ Deterministic math/formatting in Python; language/judgment (classifying a new me
 model. Dates are **explicit ISO `from_date`/`to_date`**, with optional convenience `period` shortcuts
 (`this_month` | `last_month` | `last_30_days`) resolved via `now_fn`. When both are given, explicit dates win.
 
-- **`sync_finances()`** — run the collector (via `fetch_fn`) and import. **Hardened:** a **single-flight lock**
-  (no concurrent syncs), a **timeout** on the collector, a **JSON-only stdout contract** (anything
-  unparseable → friendly failure, stderr **sanitized**, never surfaced raw), and it returns to Telegram
-  **only counts + date range** (e.g. *"נמשכו נתונים: 12 חדשות, 3 עודכנו, טווח 2026-06-01…2026-07-12"*) — never
-  raw transactions or errors. Upserts by `(source, account, fingerprint)`.
+- **`sync_finances()`** — run the collector (via `fetch_fn`) and import. **Hardened:** the real `fetch_fn`
+  runs the collector via `subprocess` with **`shell=False` + argv list** and a **repo-root-resolved absolute
+  script path** (CWD-independent); a **single-flight lock** (no concurrent syncs); a **timeout** on the
+  collector (killed + friendly failure); a **JSON-only stdout contract** (anything unparseable → friendly
+  failure, stderr **sanitized**, never surfaced raw); creds passed via the child **env** only. Returns to
+  Telegram **only counts + date range** (e.g. *"נמשכו נתונים: 12 חדשות, 3 עודכנו, טווח 2026-06-01…2026-07-12"*)
+  — never raw transactions or errors. Upserts by `(source, account, fingerprint)`.
 
 - **`financial_summary(from_date?, to_date?, period?)`** — deterministic sums over the range: **income**
-  (Σ amount>0), **expenses** (Σ amount<0), **net**, and **current balance** (latest
-  `balance_snapshot_agorot`). Returns formatted shekels.
+  (Σ amount>0), **expenses** (Σ amount<0), **net**, and **current balance**. Because Discount can return
+  **multiple accounts**, "current balance" = **Σ over accounts of the latest `balance_snapshot_agorot` for
+  that account** (latest by `imported_at`/`txn_date`) — *not* a single global latest snapshot. Returns
+  formatted shekels (per-account breakdown available if asked).
 
-- **`find_transactions(from_date?, to_date?, min_agorot?, max_agorot?, query?)`** — filtered list (capped,
-  e.g. 50), each row = date, description, amount (₪), status, derived category. For "what was that charge?".
+- **`find_transactions(from_date?, to_date?, min_abs_agorot?, max_abs_agorot?, direction?, query?)`** —
+  filtered list (capped, e.g. 50). Amount filters are **absolute** (`min_abs_agorot`/`max_abs_agorot` match
+  `abs(amount_agorot)`) so *"that ₪450 charge"* → `min_abs_agorot=45000, max_abs_agorot=45000` regardless of
+  sign; optional `direction` ∈ `expense|income` filters by sign. Each row = date, description, amount (₪),
+  status, derived category. For "what was that charge?".
 
 - **`spending_by_category(from_date?, to_date?, period?)`** — expenses grouped by **read-time-derived**
   category; returns per-category totals **plus** the count of **uncategorized** transactions and a few example
@@ -144,19 +202,39 @@ guardrails in the prompt:
 
 - **Read-only by construction:** none of the six tools can move money; the collector only issues GETs. (The
   spec's own review gate: confirm no transaction-executing capability exists.)
-- **Collector isolation (box ops, documented here):** **pin the exact `israeli-bank-scrapers` version**
-  (`collector/package.json`, manual reviewed upgrades) and run it under an **egress allow-list to
-  `start.telebank.co.il` only** — so even a poisoned transitive dependency has no route to exfiltrate.
+- **Collector isolation (box ops, documented here):** dependencies pinned via a **committed
+  `collector/package-lock.json`, installed with `npm ci`** (exact transitive tree; upgrades are manual +
+  reviewed — direct-`package.json` pinning alone allows transitive drift). Run the collector under an
+  **egress allow-list to `start.telebank.co.il` only** — so even a poisoned transitive dependency has no route
+  to exfiltrate.
 - **Credentials:** `DISCOUNT_ID` / `DISCOUNT_PASSWORD` / `DISCOUNT_NUM` in git-ignored `.env` on the box;
-  passed to the collector via env; never logged, never sent to OpenAI, never committed.
-- **Telegram output is sanitized** — only counts/ranges/aggregates leave the box; collector stderr is never
-  surfaced raw.
+  passed to the collector via the child **env** only; **never logged, never sent to OpenAI, never committed.**
+  Only the collector process ever sees them.
+
+### Privacy boundary (explicit — resolves the "who sees the data" question)
+
+Two different things, not to be conflated:
+- **The collector's raw output + stderr never leave the box.** `sync_finances` returns to Telegram **only
+  counts + date ranges** — never raw rows, never raw errors. That's what "sanitized" means here.
+- **The query tools *do* return finance data, and that data *does* go to OpenAI.** Per the agent loop
+  (`agent.py` feeds every tool result back to the model as a tool message), `find_transactions` rows and the
+  summary/category/forecast numbers are sent to OpenAI to phrase the Hebrew answer. **Explicit decision:
+  finance details may go to OpenAI in *minimized* form** — the user has accepted query-time egress (it's not
+  among their concerns). Minimization is still required: return only the fields the answer needs, **cap
+  `find_transactions` at ≤50 rows**, and prefer aggregates over raw rows where a question allows.
+- **If that ever becomes unacceptable,** the alternative is a **local-only answer path** (deterministic tools
+  compose the reply text themselves, sending only a tiny summary to the model) — noted as the fallback, not
+  built in v1. Bank **credentials** never enter this path regardless.
 
 ## Config (new `.env` keys, read in `config.py`)
 
-- `DISCOUNT_ID`, `DISCOUNT_PASSWORD`, `DISCOUNT_NUM` — **all three unset → finance tools don't load** (bot
-  still runs), same graceful pattern as calendar/roborock.
-- `FINANCE_COLLECTOR_CMD` — command to run the collector (default `node collector/scrape_discount.js`).
+- `DISCOUNT_ID`, `DISCOUNT_PASSWORD`, `DISCOUNT_NUM` — finance tools load **only when all three are set**. If
+  **some but not all** are set (partial config), finance is **disabled and a warning is logged** (fail safe,
+  don't half-load) — matching the test contract. All unset → silently off. Bot always still runs.
+- `FINANCE_NODE_BIN` — node binary (default `node`, resolved on PATH). `FINANCE_COLLECTOR_SCRIPT` — path to
+  the collector JS, **default resolved relative to the repo/package root** (`<repo>/collector/scrape_discount.js`,
+  via `__file__`), **not** the process CWD. The collector is invoked as `subprocess.run([node_bin, script],
+  shell=False, env=…, timeout=…)` — an argv list, never a shell command string.
 - Finance data lives in the shared `config.db_path` (separate tables).
 
 ## Dependencies
@@ -167,23 +245,30 @@ guardrails in the prompt:
 
 ## Testing (offline — the hard rule)
 
-Inject a **fake `fetch_fn`** returning a canned Discount dict (income salary, rent, a couple of merchants, a
-pending charge) + a real `finance_store` on a tmp SQLite, under a **frozen `now_fn`**:
-- **Import/dedup:** same `identifier` twice → one row; **fingerprint fallback** when id missing; a
-  **pending→settled** update mutates the row in place (status/amount), not a duplicate; `amount_agorot` stored
-  as **int**.
+Inject a **fake `fetch_fn`** returning a canned dict **in the Collector JSON contract shape** (a
+multi-account fixture: salary income, rent, a couple of merchants, a pending charge, one txn with a `null`
+identifier) + a real `finance_store` on a tmp SQLite, under a **frozen `now_fn`**:
+- **Import normalization:** `chargedAmount` shekels → signed `amount_agorot` **int** (e.g. `-450.00 → -45000`);
+  ISO datetime → `YYYY-MM-DD`; `status` lowercased; missing `chargedCurrency` → `ILS`; a row missing a
+  required field is dropped + counted, not fatal.
+- **Dedup:** same `identifier` twice → one row; **hash fingerprint fallback** when `identifier` is null;
+  **pending→settled** mutates the row in place (status/amount), not a duplicate.
 - **`financial_summary`:** income/expense/net over explicit `from_date`/`to_date`; `period` shortcut under the
-  frozen clock; balance = latest snapshot.
-- **`find_transactions`:** date/amount/query filters; cap respected.
-- **`spending_by_category`:** categories **derived at read time** from rules; uncategorized surfaced;
-  **changing a rule changes the summary with no row backfill.**
+  frozen clock; **balance = Σ of the latest snapshot per account** (asserted with a **2-account** fixture — not
+  a single global latest).
+- **`find_transactions`:** **absolute** amount filters — a `−45000` expense is matched by
+  `min_abs_agorot=45000`; `direction=expense|income` filters by sign; date/query filters; **≤50 cap** enforced.
+- **`spending_by_category`:** categories **derived at read time** from rules; **uncategorized (`NULL`, no rule)
+  surfaced distinctly** from a txn matched by an explicit `"other"` rule; **changing a rule changes the summary
+  with no row backfill.**
 - **`set_category_rule`:** rejects a non-canonical slug; returns affected count + examples; **precedence**
   (longest pattern wins; tie → newest) proven with overlapping rules.
 - **`cash_flow_forecast`:** recurring detected only when description+sign+day-of-month+amount criteria hold;
   overdraft flagged when projection < 0; confidence labels present; a one-off is **not** treated as recurring.
 - **`sync_finances`:** single-flight (a second concurrent call is rejected/queued, not run twice);
   **malformed collector stdout → friendly failure**, no raw stderr leak; returns only counts + range.
-- **Config:** `load_finance_config` → tools absent when any Discount key is unset.
+- **Config:** `load_finance_config` builds tools **only when all three Discount keys are set**; **partial
+  config → disabled + warning logged**; none set → silently off.
 
 **Manual (real box, outside CI):** with `DISCOUNT_*` set + the pinned collector installed under the egress
 sandbox — a real `sync_finances` pulls transactions; summary/search/category/forecast answer over real data.
@@ -192,8 +277,9 @@ sandbox — a real `sync_finances` pulls transactions; summary/search/category/f
 
 1. Config keys + `load_finance_config` (graceful) + startup wiring + the fake-`fetch_fn` test seam.
 2. `finance_store`: `transactions` upsert (fingerprint incl. hash fallback; agorot) + `category_rules`.
-3. `collector/scrape_discount.js` (pinned, JSON-only) + `sync_finances` (subprocess, timeout, single-flight,
-   sanitized) + the importer.
+3. `collector/scrape_discount.js` + `package-lock.json` (`npm ci`, JSON-only contract) + the Python **importer**
+   (contract→agorot/ISO normalization, fingerprint) + `sync_finances` (subprocess `shell=False` resolved path,
+   timeout, single-flight, sanitized).
 4. `financial_summary` + `find_transactions` (ISO dates + optional period shortcuts).
 5. `spending_by_category` (read-time derivation) + `set_category_rule` (slug validation, precedence, affected count).
 6. `cash_flow_forecast` (recurring detection + confidence + overdraft) + categorization prompt policy (digit-free).
