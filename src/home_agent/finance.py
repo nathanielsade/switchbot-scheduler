@@ -100,6 +100,19 @@ def _resolve_range(args, now_fn):
     return _period_range(args.get("period") or "this_month", now_fn())
 
 
+def _categorize(description, rules):
+    """Categorize a transaction by matching merchant patterns. Read-time derivation.
+    Precedence: longest merchant_pattern wins; tie → newest id.
+    Returns category str or None if uncategorized."""
+    desc = _norm_desc(description)
+    best = None
+    for r in rules:  # rules come ordered by id asc; keep the best by (len, id)
+        if r["merchant_pattern"].strip().lower() in desc:
+            if best is None or (len(r["merchant_pattern"]), r["id"]) >= (len(best["merchant_pattern"]), best["id"]):
+                best = r
+    return best["category"] if best else None
+
+
 _SYNC_SCHEMA = {"type": "function", "function": {
     "name": "sync_finances",
     "description": (
@@ -172,6 +185,83 @@ def _find_impl(args, *, store) -> str:
                      for r in rows)
 
 
+_SPENDING_SCHEMA = {"type": "function", "function": {
+    "name": "spending_by_category",
+    "description": (
+        "Break expenses into categories for a period (explicit from_date/to_date or a period shortcut). "
+        "Returns per-category totals plus the uncategorized count and example merchants — offer to "
+        "categorize those via set_category_rule. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "from_date": {"type": "string"}, "to_date": {"type": "string"},
+        "period": {"type": "string", "enum": list(_PERIODS)}}, "additionalProperties": False}}}
+
+_SET_RULE_SCHEMA = {"type": "function", "function": {
+    "name": "set_category_rule",
+    "description": (
+        "Persist a rule mapping a merchant substring to a category so spending is grouped consistently. "
+        "Auto-create the rule for obvious merchants; ask the user when ambiguous. Category must be one of: "
+        + ", ".join(CATEGORIES) + ". Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "merchant_pattern": {"type": "string"}, "category": {"type": "string", "enum": list(CATEGORIES)}},
+        "required": ["merchant_pattern", "category"], "additionalProperties": False}}}
+
+_LIST_RULES_SCHEMA = {"type": "function", "function": {
+    "name": "list_category_rules",
+    "description": "List the active merchant→category rules (id, pattern, category). Report in the user's language.",
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+_DEL_RULE_SCHEMA = {"type": "function", "function": {
+    "name": "delete_category_rule",
+    "description": "Remove a category rule by its id (from list_category_rules). Report in the user's language.",
+    "parameters": {"type": "object", "properties": {"id": {"type": "integer"}},
+                   "required": ["id"], "additionalProperties": False}}}
+
+
+def _spending_impl(args, *, store, now_fn) -> str:
+    frm, to = _resolve_range(args, now_fn)
+    rules = store.active_rules()
+    totals, uncategorized, examples = {}, 0, []
+    for t in store.transactions_between(frm, to):
+        if t["amount_agorot"] >= 0:
+            continue  # expenses only
+        cat = _categorize(t["description"], rules)
+        if cat is None:
+            uncategorized += 1
+            if t["description"] not in examples:
+                examples.append(t["description"])
+        else:
+            totals[cat] = totals.get(cat, 0) + t["amount_agorot"]
+    lines = [f"{c}: {_shekels(v)}" for c, v in sorted(totals.items(), key=lambda kv: kv[1])]
+    if uncategorized:
+        lines.append(f"ללא קטגוריה: {uncategorized} (למשל: {', '.join(examples[:3])})")
+    return "\n".join(lines) if lines else "אין הוצאות בטווח."
+
+
+def _set_rule_impl(args, *, store) -> str:
+    cat = (args.get("category") or "").strip().lower()
+    if cat not in CATEGORIES:
+        return f"קטגוריה לא חוקית '{cat}'. בחרו מתוך: {', '.join(CATEGORIES)}"
+    pattern = (args.get("merchant_pattern") or "").strip()
+    store.add_rule(pattern, cat)
+    affected = [t["description"] for t in store.search(query=pattern, limit=1000)]
+    ex = ", ".join(sorted(set(affected))[:3])
+    return f"נוסף כלל: '{pattern}' → {cat} (משפיע על {len(affected)} תנועות{': ' + ex if ex else ''}) ✅"
+
+
+def _list_rules_impl(args, *, store) -> str:
+    rules = store.active_rules()
+    if not rules:
+        return "אין כללי קטגוריה."
+    return "\n".join(f"[{r['id']}] {r['merchant_pattern']} → {r['category']}" for r in rules)
+
+
+def _del_rule_impl(args, *, store) -> str:
+    ok = store.remove_rule(args.get("id"))
+    return f"כלל {args.get('id')} הוסר ✅" if ok else f"לא נמצא כלל פעיל עם מזהה {args.get('id')}."
+
+
 def build_finance_tools(store, *, now_fn=None, fetch_fn=None):
     now_fn = now_fn or _now
     return [
@@ -181,6 +271,14 @@ def build_finance_tools(store, *, now_fn=None, fetch_fn=None):
              impl=lambda a: _summary_impl(a, store=store, now_fn=now_fn)),
         Tool(name="find_transactions", schema=_FIND_SCHEMA,
              impl=lambda a: _find_impl(a, store=store)),
+        Tool(name="spending_by_category", schema=_SPENDING_SCHEMA,
+             impl=lambda a: _spending_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="set_category_rule", schema=_SET_RULE_SCHEMA,
+             impl=lambda a: _set_rule_impl(a, store=store)),
+        Tool(name="list_category_rules", schema=_LIST_RULES_SCHEMA,
+             impl=lambda a: _list_rules_impl(a, store=store)),
+        Tool(name="delete_category_rule", schema=_DEL_RULE_SCHEMA,
+             impl=lambda a: _del_rule_impl(a, store=store)),
     ]
 
 

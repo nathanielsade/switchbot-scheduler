@@ -40,3 +40,34 @@ def test_find_transactions_absolute_amount():
     store, tools = _seeded()
     out = _tool(tools, "find_transactions").impl({"min_abs_agorot": 45000, "max_abs_agorot": 45000})
     assert "שופרסל" in out and "משכורת" not in out
+
+
+def test_spending_by_category_derives_and_surfaces_uncategorized():
+    store, tools = _seeded()
+    _tool(tools, "set_category_rule").impl({"merchant_pattern": "שופרסל", "category": "groceries"})
+    out = _tool(tools, "spending_by_category").impl({"from_date": "2026-07-01", "to_date": "2026-07-31"})
+    assert "groceries" in out and "450.00" in out  # שופרסל expense categorized
+
+
+def test_set_category_rule_rejects_bad_slug():
+    store, tools = _seeded()
+    out = _tool(tools, "set_category_rule").impl({"merchant_pattern": "x", "category": "nonsense"})
+    assert "nonsense" in out and "groceries" in out  # lists valid slugs
+
+
+def test_rule_precedence_longest_then_newest():
+    from home_agent.finance import _categorize
+    rules = [{"id": 1, "merchant_pattern": "super", "category": "shopping"},
+             {"id": 2, "merchant_pattern": "super pharm", "category": "health"}]
+    assert _categorize("SUPER PHARM tlv", rules) == "health"          # longest wins
+    rules2 = [{"id": 1, "merchant_pattern": "abc", "category": "shopping"},
+              {"id": 2, "merchant_pattern": "abc", "category": "groceries"}]
+    assert _categorize("abc", rules2) == "groceries"                  # tie → newest
+
+
+def test_delete_category_rule_soft_removes():
+    store, tools = _seeded()
+    out = _tool(tools, "set_category_rule").impl({"merchant_pattern": "שופרסל", "category": "groceries"})
+    rid = store.active_rules()[0]["id"]
+    assert "✅" in _tool(tools, "delete_category_rule").impl({"id": rid})
+    assert store.active_rules() == []
