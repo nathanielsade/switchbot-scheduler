@@ -35,7 +35,7 @@ def test_sync_finances_imports_and_reports_counts():
     store = FinanceStore(os.path.join(tempfile.mkdtemp(), "f.db"))
     tools = build_finance_tools(store, fetch_fn=make_fetch(contract()))
     out = _tool(tools, "sync_finances").impl({})
-    assert "2" in out  # 2 imported (model-facing count)
+    assert "2 חדשות" in out  # 2 imported (model-facing count)
     assert store.current_balance_agorot() == 120050
 
 
@@ -44,3 +44,13 @@ def test_sync_finances_malformed_is_friendly():
     def boom(): raise ValueError("collector produced no JSON")
     out = _tool(build_finance_tools(store, fetch_fn=boom), "sync_finances").impl({})
     assert "לא הצלחתי" in out or "couldn" in out.lower() or "failed" in out.lower()
+
+
+def test_sync_finances_store_error_is_friendly():
+    class _BoomStore:
+        def record_snapshot(self, *a, **k): raise RuntimeError("db locked")
+        def upsert_transactions(self, *a, **k): raise RuntimeError("db locked")
+    tools = build_finance_tools(_BoomStore(), fetch_fn=make_fetch(contract()))
+    out = _tool(tools, "sync_finances").impl({})
+    assert "לא הצלחתי" in out  # friendly; raw exception text NOT surfaced
+    assert "db locked" not in out
