@@ -432,7 +432,6 @@ def test_normalize_contract_shapes_rows_and_snapshots():
 
 
 def test_sync_finances_imports_and_reports_counts():
-    store = FinanceStore(":memory:") if False else None  # see note
     import tempfile, os
     store = FinanceStore(os.path.join(tempfile.mkdtemp(), "f.db"))
     tools = build_finance_tools(store, fetch_fn=make_fetch(contract()))
