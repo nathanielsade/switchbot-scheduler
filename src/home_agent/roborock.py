@@ -53,7 +53,6 @@ def _build_cloud_client(config):
 # Roborock v1 wire codes (confirmed live on the Qrevo a187: status showed fan_power 104, water_box_mode 202).
 _SUCTION_CODE = {"quiet": 101, "balanced": 102, "turbo": 103, "max": 104}
 _WATER_CODE = {"low": 201, "medium": 202, "high": 203}
-_WATER_OFF = 200
 _STATE_NAMES = {
     1: "starting", 2: "charger disconnected", 3: "idle", 4: "remote control", 5: "cleaning",
     6: "returning to dock", 7: "manual mode", 8: "charging", 9: "charging error", 10: "paused",
@@ -144,13 +143,13 @@ class RoborockClient:
     # ---- cleaning ------------------------------------------------------------
     def _apply_plan(self, mode, suction, water_flow):
         R = self._RoborockCommand
+        # High-level program (vacuum / mop / vac_and_mop) via the device's own cleaning-mode setting —
+        # the enum values match our MODES verbatim. "שאיבה ואז שטיפה" maps to vac_and_mop.
+        if mode in MODES:
+            self._run(self._dev.v1_properties.status.set_cleaning_mode(mode))
         if suction in _SUCTION_CODE:
             self._cmd(R.SET_CUSTOM_MODE, [_SUCTION_CODE[suction]])
-        if mode == "vacuum":
-            self._cmd(R.SET_WATER_BOX_CUSTOM_MODE, [_WATER_OFF])
-        elif mode in ("mop", "vac_and_mop"):
-            self._cmd(R.SET_WATER_BOX_CUSTOM_MODE, [_WATER_CODE.get(water_flow or "medium", 202)])
-        elif water_flow in _WATER_CODE:
+        if water_flow in _WATER_CODE:
             self._cmd(R.SET_WATER_BOX_CUSTOM_MODE, [_WATER_CODE[water_flow]])
 
     def clean(self, segment_ids, *, mode=None, suction=None, water_flow=None, repeat=1):
