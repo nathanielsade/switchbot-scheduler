@@ -528,12 +528,12 @@ def _sync_impl(args, *, store, fetch_fn) -> str:
     try:
         data = fetch_fn()
         txns, snaps, counts = normalize_contract(data)
-    except Exception as e:
+        for s in snaps:
+            store.record_snapshot(s["source"], s["account"], s["scraped_at"], s["balance_agorot"])
+        inserted, updated = store.upsert_transactions(txns)
+    except Exception as e:  # fetch/normalize/store — any failure → friendly, never surface raw text
         log.warning("sync_finances failed: %s", e)
         return "לא הצלחתי למשוך נתונים מהבנק כרגע. נסו שוב עוד רגע."
-    for s in snaps:
-        store.record_snapshot(s["source"], s["account"], s["scraped_at"], s["balance_agorot"])
-    inserted, updated = store.upsert_transactions(txns)
     dates = sorted(t["txn_date"] for t in txns) or [""]
     dropped = f", {counts['dropped']} דולגו" if counts["dropped"] else ""
     return (f"נמשכו נתונים: {inserted} חדשות, {updated} עודכנו{dropped} "
