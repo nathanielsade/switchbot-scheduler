@@ -753,8 +753,10 @@ def _find_impl(args, *, store) -> str:
                         direction=args.get("direction"), query=args.get("query"))
     if not rows:
         return "לא נמצאו תנועות תואמות."
-    return "\n".join(f"{r['txn_date']}  {r['description']}  {_shekels(r['amount_agorot'])}  ({r['status']})"
-                     for r in rows)
+    rules = store.active_rules()  # derive category per row at read time (spec: rows include category)
+    return "\n".join(
+        f"{r['txn_date']}  {r['description']}  {_shekels(r['amount_agorot'])}  ({r['status']})"
+        f"  [{_categorize(r['description'], rules) or '—'}]" for r in rows)
 ```
 Register both in `build_finance_tools` (thread `now_fn = now_fn or _now`):
 ```python
