@@ -7,6 +7,8 @@ from telegram.ext import Application, MessageHandler, filters
 from .agent import run_turn
 from .calendar_pending import CalendarPending
 from .facts import FactStore, build_memory_tools
+from .finance import build_finance_tools, finance_configured, make_collector_fetch
+from .finance_store import FinanceStore
 from .gcal import build_calendar_tools, load_calendar_service
 from .home import build_home_tools, load_registry
 from .memory import Conversation
@@ -108,6 +110,8 @@ def build_application(config, *, client=None, conversation=None):
     rr_client = load_roborock_client(config)
     if rr_client is not None:
         tools += build_roborock_tools(rr_client, load_room_registry(config))
+    if finance_configured(config):
+        tools += build_finance_tools(FinanceStore(config.db_path), fetch_fn=make_collector_fetch(config))
     fact_store = FactStore(config.db_path)
     app = Application.builder().token(config.telegram_bot_token).build()
 
