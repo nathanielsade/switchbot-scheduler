@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from .tools import Tool
@@ -70,6 +71,35 @@ def normalize_contract(data):
     return txn_rows, snapshots, {"dropped": dropped}
 
 
+_PERIODS = ("this_month", "last_month", "last_30_days")
+
+
+def _now():
+    return datetime.now().astimezone()
+
+
+def _shekels(agorot) -> str:
+    return f"₪{Decimal(agorot) / 100:,.2f}"
+
+
+def _period_range(period, now):
+    d = now.date()
+    if period == "last_30_days":
+        return (d - timedelta(days=30)).isoformat(), d.isoformat()
+    if period == "last_month":
+        first_this = d.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        return last_prev.replace(day=1).isoformat(), last_prev.isoformat()
+    return d.replace(day=1).isoformat(), d.isoformat()  # this_month (default)
+
+
+def _resolve_range(args, now_fn):
+    frm, to = args.get("from_date"), args.get("to_date")
+    if frm and to:
+        return frm, to
+    return _period_range(args.get("period") or "this_month", now_fn())
+
+
 _SYNC_SCHEMA = {"type": "function", "function": {
     "name": "sync_finances",
     "description": (
@@ -79,6 +109,32 @@ _SYNC_SCHEMA = {"type": "function", "function": {
     ),
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }}
+
+_SUMMARY_SCHEMA = {"type": "function", "function": {
+    "name": "financial_summary",
+    "description": (
+        "Summarize money for a period: income, expenses, net, and current balance (all accounts). Give "
+        "explicit from_date/to_date (YYYY-MM-DD) when known, or a period shortcut. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "from_date": {"type": "string", "description": "YYYY-MM-DD"},
+        "to_date": {"type": "string", "description": "YYYY-MM-DD"},
+        "period": {"type": "string", "enum": list(_PERIODS)},
+    }, "additionalProperties": False}}}
+
+_FIND_SCHEMA = {"type": "function", "function": {
+    "name": "find_transactions",
+    "description": (
+        "Find transactions by date range, ABSOLUTE amount in agorot (min_abs_agorot/max_abs_agorot; e.g. "
+        "45000 = ₪450 regardless of income/expense), direction (income|expense), or a text query on the "
+        "description. Returns up to fifty. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "from_date": {"type": "string"}, "to_date": {"type": "string"},
+        "min_abs_agorot": {"type": "integer"}, "max_abs_agorot": {"type": "integer"},
+        "direction": {"type": "string", "enum": ["income", "expense"]},
+        "query": {"type": "string"},
+    }, "additionalProperties": False}}}
 
 
 def _sync_impl(args, *, store, fetch_fn) -> str:
@@ -97,10 +153,34 @@ def _sync_impl(args, *, store, fetch_fn) -> str:
             f"(טווח {dates[0]}…{dates[-1]}) ✅")
 
 
+def _summary_impl(args, *, store, now_fn) -> str:
+    frm, to = _resolve_range(args, now_fn)
+    income, expense = store.sum_amounts(frm, to)
+    net = income + expense
+    bal = store.current_balance_agorot()
+    return (f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(expense)}\n"
+            f"נטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}")
+
+
+def _find_impl(args, *, store) -> str:
+    rows = store.search(from_date=args.get("from_date"), to_date=args.get("to_date"),
+                        min_abs=args.get("min_abs_agorot"), max_abs=args.get("max_abs_agorot"),
+                        direction=args.get("direction"), query=args.get("query"))
+    if not rows:
+        return "לא נמצאו תנועות תואמות."
+    return "\n".join(f"{r['txn_date']}  {r['description']}  {_shekels(r['amount_agorot'])}  ({r['status']})"
+                     for r in rows)
+
+
 def build_finance_tools(store, *, now_fn=None, fetch_fn=None):
+    now_fn = now_fn or _now
     return [
         Tool(name="sync_finances", schema=_SYNC_SCHEMA,
              impl=lambda a: _sync_impl(a, store=store, fetch_fn=fetch_fn)),
+        Tool(name="financial_summary", schema=_SUMMARY_SCHEMA,
+             impl=lambda a: _summary_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="find_transactions", schema=_FIND_SCHEMA,
+             impl=lambda a: _find_impl(a, store=store)),
     ]
 
 
