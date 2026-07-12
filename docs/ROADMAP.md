@@ -120,8 +120,9 @@ audited scraper adapter); more banks/cards are a later add.
   `(source, account, identifier)` with a normalized-fields hash fallback). Nightly on the box; run under an
   **egress allow-list to `start.telebank.co.il`** + pinned version.
 - [ ] **In-agent tools** (no external MCP): `sync_finances`, `financial_summary`, `find_transactions`,
-  `spending_by_category`, `set_category_rule`, `cash_flow_forecast` — categories **derived at read time** from
-  `category_rules` (model classifies new merchants + persists a rule, like shopping `known_items`).
+  `spending_by_category`, `set_category_rule` / `list_category_rules` / `delete_category_rule`,
+  `cash_flow_forecast` — categories **derived at read time** from `category_rules` (model classifies new
+  merchants + persists a rule, like shopping `known_items`; soft-deletable). Balances from `account_snapshots`.
 - [ ] Family financial context in the system prompt (income, savings goals, "unusual for us", trailing-3-month comparisons).
 - [ ] Free-text Q&A ("eating out this month vs average?"), anomaly detection (duplicate charges, subscription creep).
 - [ ] **Weekly summary**: Sunday 08:00 cron → agent "analyze the week" (pulls via MCP) → posts to Telegram.
