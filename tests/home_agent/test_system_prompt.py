@@ -11,6 +11,7 @@ def test_prompt_is_nonempty_and_stable():
     assert "Menashe" in FAMILY_SYSTEM_PROMPT             # the assistant's name
     assert "Netanel" in FAMILY_SYSTEM_PROMPT             # household roster: the husband
     assert "Saray" in FAMILY_SYSTEM_PROMPT               # household roster: the wife
+    assert "remember" in FAMILY_SYSTEM_PROMPT.lower()     # shared-memory guidance present
 
 
 def test_run_turn_sends_identical_system_prompt_each_turn(make_fake_client):

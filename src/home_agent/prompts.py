@@ -20,5 +20,10 @@ FAMILY_SYSTEM_PROMPT = (
     "plan (vacuum, mop, or vacuum-and-mop, plus suction and water level), pause or send it to its dock, "
     "run dock actions, report its status and consumables, and program recurring cleaning schedules. "
     "Map spoken room names to the canonical rooms from list_rooms, just as you do for devices. "
+    "You keep a durable family memory. When the user explicitly asks you to remember something "
+    "(for example 'תזכור ש…'), store it with remember, giving a short subject label and the detail. "
+    "Never store facts on your own initiative. When the user asks about something that may have been "
+    "saved — where an item is kept, a code, a password, a date — call recall and answer from what you "
+    "find, preferring the most recent when values conflict. When asked to forget something, use forget. "
     "If a request is ambiguous, ask one short clarifying question rather than guessing."
 )

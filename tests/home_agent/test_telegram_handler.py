@@ -184,3 +184,32 @@ def test_calendar_same_turn_prepare_then_commit_is_not_applied(tmp_path, make_fa
                            calendar_service=svc, calendar_pending=pend)
     assert not any(c[0] == "insert" for c in svc.events().calls)   # same-turn commit did NOT apply
     assert pend.current(1) is not None                             # still staged for a later confirm
+
+
+def test_handle_message_remember_then_recall_through_composed_tools(tmp_path, make_fake_client):
+    from home_agent.facts import FactStore
+    store = FactStore(str(tmp_path / "m.db"))
+    conv = Conversation(str(tmp_path / "m.db"))
+    cfg = _cfg(tmp_path, {1})
+
+    # Turn 1: user asks to remember; model calls remember, then replies.
+    client1 = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "remember",
+                         "arguments": {"subject": "דרכונים", "fact": "בכספת"}}]},
+        {"content": "אזכור שהדרכונים בכספת"},
+    ])
+    handle_message(1, "תזכור שהדרכונים בכספת", config=cfg, conversation=conv,
+                   client=client1, fact_store=store, sender="נתנאל")
+    assert store.active()[0]["fact"] == "בכספת"
+    assert store.active()[0]["author"] == "נתנאל"
+
+    # Turn 2: user asks where; model calls recall, sees the fact, answers.
+    client2 = make_fake_client([
+        {"tool_calls": [{"id": "c2", "name": "recall", "arguments": {}}]},
+        {"content": "הדרכונים בכספת"},
+    ])
+    reply = handle_message(1, "איפה הדרכונים?", config=cfg, conversation=conv,
+                           client=client2, fact_store=store, sender="שרי")
+    recall_msgs = [m for m in client2._calls[1]["messages"] if m.get("role") == "tool"]
+    assert any("בכספת" in m["content"] for m in recall_msgs)
+    assert reply == "הדרכונים בכספת"

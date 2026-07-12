@@ -6,6 +6,7 @@ from telegram.ext import Application, MessageHandler, filters
 
 from .agent import run_turn
 from .calendar_pending import CalendarPending
+from .facts import FactStore, build_memory_tools
 from .gcal import build_calendar_tools, load_calendar_service
 from .home import build_home_tools, load_registry
 from .memory import Conversation
@@ -42,7 +43,7 @@ def _split_for_telegram(text, limit=_TELEGRAM_MAX_CHARS):
 
 def handle_message(chat_id, text, *, config, conversation, client,
                    tools=DEFAULT_TOOLS, system=FAMILY_SYSTEM_PROMPT, model=None,
-                   calendar_service=None, calendar_pending=None, sender=None):
+                   calendar_service=None, calendar_pending=None, sender=None, fact_store=None):
     """Process one inbound Telegram text message. Returns the reply text, or None to stay silent.
     Sequencing note: history is loaded BEFORE the current message is persisted, so the current
     turn is not duplicated in the model context.
@@ -65,6 +66,8 @@ def handle_message(chat_id, text, *, config, conversation, client,
         turn_tools = turn_tools + build_calendar_tools(
             calendar_service, calendar_pending, chat_id, committable_id,
             calendar_ids=config.calendar_ids, write_id=config.calendar_write_id)
+    if fact_store is not None:
+        turn_tools = turn_tools + build_memory_tools(fact_store, sender=sender)
     message_text = f"{sender}: {text}" if sender else text
     history = conversation.load(chat_id)
     try:
@@ -105,6 +108,7 @@ def build_application(config, *, client=None, conversation=None):
     rr_client = load_roborock_client(config)
     if rr_client is not None:
         tools += build_roborock_tools(rr_client, load_room_registry(config))
+    fact_store = FactStore(config.db_path)
     app = Application.builder().token(config.telegram_bot_token).build()
 
     async def on_message(update, context):
@@ -132,7 +136,8 @@ def build_application(config, *, client=None, conversation=None):
             reply = await asyncio.to_thread(
                 handle_message, chat_id, message.text or "",
                 config=config, conversation=conversation, client=client, tools=tools,
-                calendar_service=cal_service, calendar_pending=cal_pending, sender=sender)
+                calendar_service=cal_service, calendar_pending=cal_pending, sender=sender,
+                fact_store=fact_store)
         finally:
             typing.cancel()
         if reply:
