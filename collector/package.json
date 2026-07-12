@@ -1,0 +1,6 @@
+{
+  "name": "smart-home-finance-collector",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": { "israeli-bank-scrapers": "^6.8.0" }
+}

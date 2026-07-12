@@ -11,3 +11,5 @@ roborock_userdata.json
 *.db
 home_agent.db
 secrets/
+# Finance collector deps (installed via npm ci from collector/package-lock.json)
+collector/node_modules/
