@@ -8,6 +8,7 @@ DEFAULT_DB_PATH = "home_agent.db"
 DEFAULT_OPENAI_TIMEOUT = 60.0  # seconds; caps a hung request instead of the SDK's 600s default
 DEFAULT_DEVICES_PATH = "devices.yaml"
 DEFAULT_ROOMS_PATH = "roborock_rooms.yaml"
+DEFAULT_ROBOROCK_USERDATA_PATH = "roborock_userdata.json"
 
 
 @dataclass
@@ -25,6 +26,7 @@ class Config:
     roborock_username: str = ""
     roborock_password: str = ""
     roborock_rooms_path: str = DEFAULT_ROOMS_PATH
+    roborock_userdata_path: str = DEFAULT_ROBOROCK_USERDATA_PATH
 
 
 def _parse_chat_ids(raw: str) -> set[int]:
@@ -57,4 +59,5 @@ def load_config(path: str | None = None) -> Config:
         roborock_username=os.environ.get("ROBOROCK_USERNAME", ""),
         roborock_password=os.environ.get("ROBOROCK_PASSWORD", ""),
         roborock_rooms_path=os.environ.get("ROBOROCK_ROOMS", DEFAULT_ROOMS_PATH),
+        roborock_userdata_path=os.environ.get("ROBOROCK_USERDATA", DEFAULT_ROBOROCK_USERDATA_PATH),
     )

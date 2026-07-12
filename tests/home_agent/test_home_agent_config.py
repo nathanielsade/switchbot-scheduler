@@ -4,7 +4,8 @@ import pytest
 def _clean_env(monkeypatch):
     for k in ("ALLOWED_CHAT_IDS", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN",
               "HOME_AGENT_MODEL", "HOME_AGENT_DB", "HOME_AGENT_OPENAI_TIMEOUT", "SWITCHBOT_DEVICES",
-              "GOOGLE_SA_KEYFILE", "CALENDAR_IDS", "CALENDAR_WRITE_ID"):
+              "GOOGLE_SA_KEYFILE", "CALENDAR_IDS", "CALENDAR_WRITE_ID",
+              "ROBOROCK_USERNAME", "ROBOROCK_PASSWORD", "ROBOROCK_ROOMS", "ROBOROCK_USERDATA"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -65,27 +66,26 @@ def test_load_config_calendar_keys(tmp_path, monkeypatch):
     assert load_config(str(env)).calendar_write_id == "me@g.com"
 
 
-def test_load_config_reads_roborock_keys(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
-    monkeypatch.setenv("ALLOWED_CHAT_IDS", "")
-    monkeypatch.setenv("ROBOROCK_USERNAME", "me@example.com")
-    monkeypatch.setenv("ROBOROCK_PASSWORD", "secret")
-    monkeypatch.setenv("ROBOROCK_ROOMS", "custom_rooms.yaml")
+def test_load_config_reads_roborock_keys(tmp_path, monkeypatch):
+    _clean_env(monkeypatch)
+    env = tmp_path / ".env"
+    env.write_text("OPENAI_API_KEY=sk-x\nTELEGRAM_BOT_TOKEN=tok\n"
+                   "ROBOROCK_USERNAME=me@example.com\nROBOROCK_PASSWORD=secret\n"
+                   "ROBOROCK_ROOMS=custom_rooms.yaml\nROBOROCK_USERDATA=/tok.json\n")
     from home_agent.config import load_config
-    cfg = load_config()
+    cfg = load_config(str(env))
     assert cfg.roborock_username == "me@example.com"
     assert cfg.roborock_password == "secret"
     assert cfg.roborock_rooms_path == "custom_rooms.yaml"
+    assert cfg.roborock_userdata_path == "/tok.json"
 
 
-def test_load_config_roborock_defaults(monkeypatch):
-    for k in ("ROBOROCK_USERNAME", "ROBOROCK_PASSWORD", "ROBOROCK_ROOMS"):
-        monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
-    monkeypatch.setenv("ALLOWED_CHAT_IDS", "")
+def test_load_config_roborock_defaults(tmp_path, monkeypatch):
+    _clean_env(monkeypatch)
+    env = tmp_path / ".env"
+    env.write_text("OPENAI_API_KEY=sk-x\nTELEGRAM_BOT_TOKEN=tok\n")
     from home_agent.config import load_config
-    cfg = load_config()
+    cfg = load_config(str(env))
     assert cfg.roborock_username == "" and cfg.roborock_password == ""
     assert cfg.roborock_rooms_path == "roborock_rooms.yaml"
+    assert cfg.roborock_userdata_path == "roborock_userdata.json"

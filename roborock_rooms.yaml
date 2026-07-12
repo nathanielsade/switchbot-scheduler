@@ -1,0 +1,24 @@
+# Real segment map for the Roborock Qrevo (home 10064082), seeded from GET_ROOM_MAPPING 2026-07-12.
+# segment_id = the robot's map segment; aliases = how the family refers to the room (Hebrew + English).
+rooms:
+  kitchen:
+    segment_id: 1
+    aliases: ["מטבח", "kitchen"]
+  bedroom:
+    segment_id: 3
+    aliases: ["חדר שינה", "חדר השינה", "bedroom", "master bedroom"]
+  guest_bedroom:
+    segment_id: 4
+    aliases: ["חדר שינה לאורחים", "חדר אורחים", "guest bedroom", "guest room"]
+  hallway:
+    segment_id: 5
+    aliases: ["פרוזדור", "מסדרון", "hallway", "corridor"]
+  bathroom:
+    segment_id: 6
+    aliases: ["חדר אמבטיה", "אמבטיה", "שירותים", "bathroom"]
+  bathroom_1:
+    segment_id: 7
+    aliases: ["חדר אמבטיה1", "אמבטיה שנייה", "bathroom 1", "second bathroom"]
+  living_room:
+    segment_id: 8
+    aliases: ["סלון", "salon", "living room", "lounge"]

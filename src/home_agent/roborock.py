@@ -13,55 +13,206 @@ WATER_FLOWS = ("low", "medium", "high")
 
 
 def load_roborock_client(config):
-    """Build the real cloud RoborockClient from config, or return None (with a warning) when
-    credentials are unset. python-roborock is imported LAZILY inside the real build path (Task 3),
-    so importing this module never touches the network."""
-    if not config.roborock_username or not config.roborock_password:
-        log.warning("ROBOROCK_USERNAME/PASSWORD unset — Roborock control disabled")
+    """Build the real cloud RoborockClient from config, or return None (with a warning) when the
+    account isn't configured. python-roborock is imported LAZILY inside the build path, so importing
+    this module never touches the network and the test suite never needs the library."""
+    if not config.roborock_username:
+        log.warning("ROBOROCK_USERNAME unset — Roborock control disabled")
         return None
     try:
         return _build_cloud_client(config)
     except Exception as e:
-        log.warning("Roborock login failed (%s) — vacuum control disabled", e)
+        log.warning("Roborock connect failed (%s) — vacuum control disabled", e)
         return None
 
 
 def _build_cloud_client(config):
-    """Real cloud client. python-roborock is imported HERE (lazy) so importing this module
-    never touches the network and the test suite never needs the library.
-    NOTE: the exact python-roborock login + command call shapes are CONFIRMED AT BUILD TIME
-    during the live smoke (Task 8); RoborockClient below is where that mapping lives."""
-    return RoborockClient(config.roborock_username, config.roborock_password)
+    """Obtain UserData (from a saved token file if present, else a password login) and build the
+    connected RoborockClient. python-roborock is imported HERE (lazy). Token-file auth is preferred
+    because accounts created via the app's email-code / Google sign-in have no usable password."""
+    import json
+    import os
+
+    from roborock.data.containers import UserData
+
+    if os.path.exists(config.roborock_userdata_path):
+        with open(config.roborock_userdata_path) as f:
+            user_data = UserData.from_dict(json.load(f))
+    elif config.roborock_password:
+        import asyncio
+
+        from roborock.web_api import RoborockApiClient
+        user_data = asyncio.run(RoborockApiClient(config.roborock_username).pass_login(config.roborock_password))
+    else:
+        raise RuntimeError(
+            f"no Roborock auth: neither a token file at {config.roborock_userdata_path!r} nor ROBOROCK_PASSWORD"
+        )
+    return RoborockClient(config.roborock_username, user_data)
+
+
+# Roborock v1 wire codes (confirmed live on the Qrevo a187: status showed fan_power 104, water_box_mode 202).
+_SUCTION_CODE = {"quiet": 101, "balanced": 102, "turbo": 103, "max": 104}
+_WATER_CODE = {"low": 201, "medium": 202, "high": 203}
+_WATER_OFF = 200
+_STATE_NAMES = {
+    1: "starting", 2: "charger disconnected", 3: "idle", 4: "remote control", 5: "cleaning",
+    6: "returning to dock", 7: "manual mode", 8: "charging", 9: "charging error", 10: "paused",
+    11: "spot cleaning", 12: "error", 13: "shutting down", 14: "updating", 15: "docking",
+    16: "going to target", 17: "zone cleaning", 18: "room cleaning", 22: "emptying dust",
+    23: "washing mop", 26: "going to wash the mop",
+}
 
 
 class RoborockClient:
-    """Domain-level wrapper over python-roborock. Translates domain terms (mode/suction/
-    water_flow enums, segment ids) into library commands. The single injectable seam; tests
-    inject a fake with the same method surface."""
+    """Domain-level wrapper over python-roborock (cloud/MQTT). Translates domain terms (mode/suction/
+    water_flow enums, segment ids) into device commands via the v1 `command.send` primitive.
 
-    def __init__(self, username, password):
-        # Lazy import + cloud login. Filled in at build time against python-roborock's current API
-        # (RoborockApiClient login -> home data -> device -> MQTT/local client). Kept out of the
-        # test path entirely (tests use FakeRoborockClient).
-        from roborock import RoborockApiClient  # noqa: F401  (lazy; confirm exact symbols at build)
-        raise NotImplementedError("wire python-roborock login here at build time (Task 8)")
+    The tools call this synchronously (python-telegram-bot runs handlers in a worker thread), but the
+    library is async, so we own a background asyncio loop thread and marshal each call onto it. The
+    MQTT connection is established once and reused. This is the single injectable seam; tests inject a
+    fake with the same method surface, so none of this async/library code runs in the suite."""
 
-    # The method surface below is what the tools call; the real bodies are wired at build time.
-    def room_mapping(self): raise NotImplementedError
-    def clean(self, segment_ids, *, mode=None, suction=None, water_flow=None, repeat=1): raise NotImplementedError
-    def pause(self): raise NotImplementedError
-    def resume(self): raise NotImplementedError
-    def stop(self): raise NotImplementedError
-    def return_to_dock(self): raise NotImplementedError
-    def locate(self): raise NotImplementedError
-    def empty_bin(self): raise NotImplementedError
-    def wash_mop(self): raise NotImplementedError
-    def dry_mop(self): raise NotImplementedError
-    def status(self): raise NotImplementedError
-    def consumables(self): raise NotImplementedError
-    def get_timers(self): raise NotImplementedError
-    def set_timer(self, *, time, days, segment_ids, mode, suction, water_flow): raise NotImplementedError
-    def del_timer(self, timer_id): raise NotImplementedError
+    def __init__(self, username, user_data, *, connect_timeout=30.0, call_timeout=60.0):
+        import asyncio
+        import threading
+
+        from roborock import RoborockCommand
+        self._RoborockCommand = RoborockCommand
+        self._call_timeout = call_timeout
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True, name="roborock-loop")
+        self._thread.start()
+        self._username = username
+        self._user_data = user_data
+        self._mgr = None
+        self._dev = None
+        self._run(self._connect(), timeout=connect_timeout)
+
+    # ---- async plumbing ------------------------------------------------------
+    def _run(self, coro, timeout=None):
+        import asyncio
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result(timeout=timeout or self._call_timeout)
+
+    async def _connect(self):
+        from roborock.devices.device_manager import UserParams, create_device_manager
+        self._mgr = await create_device_manager(
+            UserParams(username=self._username, user_data=self._user_data))
+        devices = await self._mgr.discover_devices()
+        if not devices:
+            raise RuntimeError("no Roborock devices found on the account")
+        self._dev = devices[0]
+        if not self._dev.is_connected:
+            await self._dev.connect()
+
+    async def _send(self, command, params=None):
+        return await self._dev.v1_properties.command.send(command, params)
+
+    def _cmd(self, command, params=None):
+        return self._run(self._send(command, params))
+
+    # ---- reads ---------------------------------------------------------------
+    def room_mapping(self):
+        raw = self._cmd(self._RoborockCommand.GET_ROOM_MAPPING) or []
+        # [[segment_id, iot_room_id, ...], ...]; name lookup is the caller's job (web rooms).
+        return [(row[0], str(row[1])) for row in raw if isinstance(row, (list, tuple)) and len(row) >= 2]
+
+    def status(self):
+        raw = self._cmd(self._RoborockCommand.GET_STATUS)
+        s = raw[0] if isinstance(raw, list) else raw
+        code = s.get("error_code") or 0
+        return {
+            "state": _STATE_NAMES.get(s.get("state"), f"state {s.get('state')}"),
+            "battery": s.get("battery"),
+            "cleaned_area": round((s.get("clean_area") or 0) / 1_000_000, 1),  # mm² → m²
+            "clean_time": s.get("clean_time") or 0,                            # seconds
+            "segment_id": None,  # not exposed by GET_STATUS
+            "error": None if code == 0 else f"error code {code}",
+        }
+
+    def consumables(self):
+        raw = self._cmd(self._RoborockCommand.GET_CONSUMABLE)
+        c = raw[0] if isinstance(raw, list) else raw
+        # Report % remaining against the manufacturer replace intervals (seconds).
+        HOUR = 3600
+        lifetimes = {"main_brush": 300 * HOUR, "side_brush": 200 * HOUR,
+                     "filter": 150 * HOUR, "sensor": 30 * HOUR}
+        used = {"main_brush": c.get("main_brush_work_time", 0), "side_brush": c.get("side_brush_work_time", 0),
+                "filter": c.get("filter_work_time", 0), "sensor": c.get("sensor_dirty_time", 0)}
+        return {k: max(0, round(100 * (1 - used[k] / lifetimes[k]))) for k in lifetimes}
+
+    # ---- cleaning ------------------------------------------------------------
+    def _apply_plan(self, mode, suction, water_flow):
+        R = self._RoborockCommand
+        if suction in _SUCTION_CODE:
+            self._cmd(R.SET_CUSTOM_MODE, [_SUCTION_CODE[suction]])
+        if mode == "vacuum":
+            self._cmd(R.SET_WATER_BOX_CUSTOM_MODE, [_WATER_OFF])
+        elif mode in ("mop", "vac_and_mop"):
+            self._cmd(R.SET_WATER_BOX_CUSTOM_MODE, [_WATER_CODE.get(water_flow or "medium", 202)])
+        elif water_flow in _WATER_CODE:
+            self._cmd(R.SET_WATER_BOX_CUSTOM_MODE, [_WATER_CODE[water_flow]])
+
+    def clean(self, segment_ids, *, mode=None, suction=None, water_flow=None, repeat=1):
+        if mode or suction or water_flow:
+            self._apply_plan(mode, suction, water_flow)
+        R = self._RoborockCommand
+        if segment_ids:
+            self._cmd(R.APP_SEGMENT_CLEAN, [{"segments": list(segment_ids), "repeat": repeat}])
+        else:
+            self._cmd(R.START_CLEAN)
+
+    def pause(self):
+        self._cmd(self._RoborockCommand.APP_PAUSE)
+
+    def resume(self):
+        self._cmd(self._RoborockCommand.RESUME_SEGMENT_CLEAN)
+
+    def stop(self):
+        self._cmd(self._RoborockCommand.APP_STOP)
+
+    def return_to_dock(self):
+        self._cmd(self._RoborockCommand.APP_CHARGE)
+
+    def locate(self):
+        self._cmd(self._RoborockCommand.FIND_ME)
+
+    # ---- dock ----------------------------------------------------------------
+    def empty_bin(self):
+        self._cmd(self._RoborockCommand.APP_START_COLLECT_DUST)
+
+    def wash_mop(self):
+        self._cmd(self._RoborockCommand.APP_START_WASH)
+
+    def dry_mop(self):
+        self._cmd(self._RoborockCommand.APP_SET_DRYER_STATUS, {"status": 1})
+
+    # ---- schedules (robot-native server timers) ------------------------------
+    def get_timers(self):
+        raw = self._cmd(self._RoborockCommand.GET_SERVER_TIMER) or []
+        timers = []
+        for row in raw:
+            # [id, "on"/"off", [cron_min, cron_hour, ...], ...]
+            tid = str(row[0]) if isinstance(row, (list, tuple)) else str(row)
+            enabled = (row[1] == "on") if isinstance(row, (list, tuple)) and len(row) > 1 else True
+            timers.append({"id": tid, "time": "", "days": [], "enabled": enabled, "target": "", "mode": None})
+        return timers
+
+    def set_timer(self, *, time, days, segment_ids, mode, suction, water_flow):
+        # SET_SERVER_TIMER's payload (a cron plus an embedded clean command) is firmware-specific and
+        # not yet verified live; surface a friendly failure so schedule_clean degrades per the spec's
+        # scheduling fallback rather than sending a malformed command to the robot.
+        raise RuntimeError("recurring cleaning schedules aren't enabled yet on this robot")
+
+    def del_timer(self, timer_id):
+        self._cmd(self._RoborockCommand.DEL_SERVER_TIMER, [str(timer_id)])
+        return True
+
+    def close(self):
+        try:
+            self._run(self._mgr.close(), timeout=10)
+        finally:
+            self._loop.call_soon_threadsafe(self._loop.stop)
 
 
 _LIST_ROOMS_SCHEMA = {"type": "function", "function": {
