@@ -61,9 +61,10 @@ class FinanceStore:
     def current_balance_agorot(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
-                "SELECT a.balance_agorot FROM account_snapshots a WHERE a.scraped_at ="
-                " (SELECT MAX(b.scraped_at) FROM account_snapshots b"
-                "  WHERE b.source=a.source AND b.account=a.account)").fetchall()
+                "SELECT a.balance_agorot FROM account_snapshots a WHERE a.rowid ="
+                " (SELECT b.rowid FROM account_snapshots b"
+                "  WHERE b.source=a.source AND b.account=a.account"
+                "  ORDER BY b.scraped_at DESC, b.rowid DESC LIMIT 1)").fetchall()
         return sum(r[0] for r in rows)
 
     def sum_amounts(self, from_date, to_date):

@@ -61,3 +61,10 @@ def test_rule_add_list_remove(tmp_path):
     assert [r["merchant_pattern"] for r in s.active_rules()] == ["שופרסל"]
     assert s.remove_rule(rid) is True
     assert s.active_rules() == []
+
+
+def test_current_balance_tie_scraped_at_picks_one(tmp_path):
+    s = _store(tmp_path)
+    s.record_snapshot("discount", "1", "2026-07-01T00:00:00Z", 100000)
+    s.record_snapshot("discount", "1", "2026-07-01T00:00:00Z", 999999)  # same scraped_at
+    assert s.current_balance_agorot() == 999999  # latest inserted wins, not 1099999
