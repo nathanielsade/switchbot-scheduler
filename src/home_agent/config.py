@@ -9,6 +9,7 @@ DEFAULT_OPENAI_TIMEOUT = 60.0  # seconds; caps a hung request instead of the SDK
 DEFAULT_DEVICES_PATH = "devices.yaml"
 DEFAULT_ROOMS_PATH = "roborock_rooms.yaml"
 DEFAULT_ROBOROCK_USERDATA_PATH = "roborock_userdata.json"
+DEFAULT_COLLECTOR_SCRIPT = "collector/scrape_discount.js"
 
 
 @dataclass
@@ -27,6 +28,11 @@ class Config:
     roborock_password: str = ""
     roborock_rooms_path: str = DEFAULT_ROOMS_PATH
     roborock_userdata_path: str = DEFAULT_ROBOROCK_USERDATA_PATH
+    discount_id: str = ""
+    discount_password: str = ""
+    discount_num: str = ""
+    finance_node_bin: str = "node"
+    finance_collector_script: str = DEFAULT_COLLECTOR_SCRIPT
 
 
 def _parse_chat_ids(raw: str) -> set[int]:
@@ -60,4 +66,9 @@ def load_config(path: str | None = None) -> Config:
         roborock_password=os.environ.get("ROBOROCK_PASSWORD", ""),
         roborock_rooms_path=os.environ.get("ROBOROCK_ROOMS", DEFAULT_ROOMS_PATH),
         roborock_userdata_path=os.environ.get("ROBOROCK_USERDATA", DEFAULT_ROBOROCK_USERDATA_PATH),
+        discount_id=os.environ.get("DISCOUNT_ID", ""),
+        discount_password=os.environ.get("DISCOUNT_PASSWORD", ""),
+        discount_num=os.environ.get("DISCOUNT_NUM", ""),
+        finance_node_bin=os.environ.get("FINANCE_NODE_BIN", "node"),
+        finance_collector_script=os.environ.get("FINANCE_COLLECTOR_SCRIPT", DEFAULT_COLLECTOR_SCRIPT),
     )
