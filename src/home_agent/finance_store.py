@@ -95,7 +95,12 @@ class FinanceStore:
         if max_abs is not None: clauses.append("ABS(amount_agorot) <= ?"); params.append(max_abs)
         if direction == "income": clauses.append("amount_agorot > 0")
         elif direction == "expense": clauses.append("amount_agorot < 0")
-        if query: clauses.append("description LIKE ?"); params.append(f"%{query}%")
+        if query:
+            # Forgiving match: any word of the query as a substring (the model may pass a phrase
+            # like "הפקדות לפיקדון" whose exact string isn't in the description "הפקדה לפיקדון").
+            tokens = [t for t in query.split() if len(t) >= 2] or [query]
+            clauses.append("(" + " OR ".join(["description LIKE ?"] * len(tokens)) + ")")
+            params.extend(f"%{t}%" for t in tokens)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with closing(sqlite3.connect(self.db_path)) as conn:
             return self._rows(conn, f"{where} ORDER BY txn_date DESC LIMIT ?", (*params, limit))

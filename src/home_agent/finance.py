@@ -126,8 +126,11 @@ _SYNC_SCHEMA = {"type": "function", "function": {
 _SUMMARY_SCHEMA = {"type": "function", "function": {
     "name": "financial_summary",
     "description": (
-        "Summarize money for a period: income, expenses, net, and current balance (all accounts). Give "
-        "explicit from_date/to_date (YYYY-MM-DD) when known, or a period shortcut. Report in the user's language."
+        "THE TOOL FOR TOTALS. Use this for any 'how much did we spend / earn / what's our balance / are we "
+        "positive this month' question — it returns total income, total expenses, net, and current balance "
+        "for a period. (For a breakdown BY CATEGORY, use spending_by_category instead; for one specific "
+        "charge, use find_transactions.) Give explicit from_date/to_date (YYYY-MM-DD), or a period shortcut. "
+        "Report in the user's language."
     ),
     "parameters": {"type": "object", "properties": {
         "from_date": {"type": "string", "description": "YYYY-MM-DD"},
@@ -138,9 +141,11 @@ _SUMMARY_SCHEMA = {"type": "function", "function": {
 _FIND_SCHEMA = {"type": "function", "function": {
     "name": "find_transactions",
     "description": (
-        "Find transactions by date range, ABSOLUTE amount in agorot (min_abs_agorot/max_abs_agorot; e.g. "
-        "45000 = ₪450 regardless of income/expense), direction (income|expense), or a text query on the "
-        "description. Returns up to fifty. Report in the user's language."
+        "Look up individual transactions (e.g. 'what was that ₪450 charge', 'find the rent payments'). "
+        "Filter by date range, ABSOLUTE amount in agorot (min_abs_agorot/max_abs_agorot; e.g. 45000 = ₪450 "
+        "regardless of income/expense), direction (income|expense), or `query`. For `query`, pass a SHORT "
+        "keyword or merchant name (one or two words, e.g. 'פיקדון', 'שופרסל') — NOT a full sentence. Returns "
+        "up to fifty. Report in the user's language."
     ),
     "parameters": {"type": "object", "properties": {
         "from_date": {"type": "string"}, "to_date": {"type": "string"},
@@ -189,9 +194,10 @@ def _find_impl(args, *, store) -> str:
 _SPENDING_SCHEMA = {"type": "function", "function": {
     "name": "spending_by_category",
     "description": (
-        "Break expenses into categories for a period (explicit from_date/to_date or a period shortcut). "
-        "Returns per-category totals plus the uncategorized count and example merchants — offer to "
-        "categorize those via set_category_rule. Report in the user's language."
+        "Use ONLY when the user asks for a per-category BREAKDOWN of spending (how much on groceries vs "
+        "eating-out, etc.). Do NOT use this for the total amount spent — that's financial_summary. Returns "
+        "per-category totals plus the uncategorized count and example merchants; offer to categorize those "
+        "via set_category_rule. Explicit from_date/to_date or a period shortcut. Report in the user's language."
     ),
     "parameters": {"type": "object", "properties": {
         "from_date": {"type": "string"}, "to_date": {"type": "string"},

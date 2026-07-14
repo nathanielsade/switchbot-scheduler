@@ -68,3 +68,13 @@ def test_current_balance_tie_scraped_at_picks_one(tmp_path):
     s.record_snapshot("discount", "1", "2026-07-01T00:00:00Z", 100000)
     s.record_snapshot("discount", "1", "2026-07-01T00:00:00Z", 999999)  # same scraped_at
     assert s.current_balance_agorot() == 999999  # latest inserted wins, not 1099999
+
+
+def test_search_query_matches_any_word(tmp_path):
+    s = _store(tmp_path)
+    s.upsert_transactions([_row(identifier="d", fingerprint="id:d",
+                                description='הפקדה לפיקדון הו"ק נזיל חודשי')])
+    # a phrase the model might pass (plural / extra words) still matches via per-word OR
+    assert len(s.search(query="הפקדות לפיקדון")) == 1
+    assert len(s.search(query="פיקדון")) == 1
+    assert len(s.search(query="שכירות")) == 0
