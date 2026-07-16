@@ -1,4 +1,5 @@
 import base64, hashlib, hmac, json, logging, time, uuid
+import urllib.error
 import urllib.request
 
 log = logging.getLogger("home_agent")
@@ -33,8 +34,11 @@ def _headers(token: str, secret: str) -> dict:
 def _real_http(method, url, headers, body):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        return resp.status, json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode())
 
 
 def _call(method, url, *, token, secret, body=None, http_fn=None, sleep_fn=None):
@@ -46,9 +50,12 @@ def _call(method, url, *, token, secret, body=None, http_fn=None, sleep_fn=None)
             status, payload = http_fn(method, url, _headers(token, secret), body)
         except Exception as e:  # transient (timeout/conn) — retry
             last = SwitchBotCloudError(f"request failed: {type(e).__name__}")
-            sleep_fn(1 + attempt); continue
+            if attempt < _RETRIES: sleep_fn(1 + attempt)
+            continue
         if status // 100 == 5:  # server error — retry
-            last = SwitchBotCloudError(f"HTTP {status}"); sleep_fn(1 + attempt); continue
+            last = SwitchBotCloudError(f"HTTP {status}")
+            if attempt < _RETRIES: sleep_fn(1 + attempt)
+            continue
         code = payload.get("statusCode")
         if status // 100 != 2 or code != 100:
             raise SwitchBotCloudError(payload.get("message") or f"HTTP {status} statusCode {code}")
