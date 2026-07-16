@@ -80,20 +80,34 @@ A device is routed by its config:
 ### 5. Box-side scheduler — PTB JobQueue
 - **Dependency:** `pyproject.toml` → `python-telegram-bot[job-queue]>=21.0` (adds APScheduler). Deploy
   reinstalls deps.
-- Built in `telegram_app.build_application` after the Application is created (so `app.job_queue` exists).
-- **Timezone:** all jobs scheduled in the **home timezone** (from `now_fn().tzinfo`, i.e. Asia/Jerusalem),
-  never UTC.
+- **Build order in `build_application` (explicit — this reorders current code):** the tools are currently
+  built *before* the `Application`; reorder to → (1) create the PTB `Application` (so `app.job_queue`
+  exists — non-None thanks to the job-queue extra), (2) create `ScheduleStore`, (3) create the scheduler
+  wrapper over `app.job_queue`, (4) `build_schedule_tools(..., scheduler=...)`.
+- **Timezone:** use an **explicit `zoneinfo.ZoneInfo`** (config `HOME_TZ`, default `Asia/Jerusalem`) — never
+  UTC, and never a fixed-offset tzinfo (a fixed offset breaks recurring `run_daily` across DST). The same
+  `ZoneInfo` is used both for parsing `fire_at` and for `run_daily`.
 - **Startup reconciliation:** call `ScheduleStore.remove_expired(now)` first (drop past one-time rows so
   they are **not** fired late after a reboot). Then for each **cloud-device** schedule in the store:
-  - recurring (`once=False`): `job_queue.run_daily(cb, time=HH:MM@tz, days=weekday-set, name="switchbot-cloud:{id}")`
-  - one-time (`once=True`): `job_queue.run_once(cb, when=fire_at, name="switchbot-cloud:{id}")` (only if `fire_at` is future)
+  - recurring (`once=False`): `job_queue.run_daily(cb, time=time(HH,MM, tzinfo=ZoneInfo), days=weekday-set, name="switchbot-cloud:{id}")`
+  - one-time (`once=True`): **parse** `fire_at` with `datetime.fromisoformat(fire_at)` (it is stored as an
+    ISO text string; `run_once` needs a `datetime`, not a string) into a tz-aware datetime in the home
+    `ZoneInfo`; if future → `job_queue.run_once(cb, when=<datetime>, name="switchbot-cloud:{id}")`; if past,
+    it was already dropped by `remove_expired`.
 - **Job callback:** async; calls `await asyncio.to_thread(send_command, cloud_id, mapped_command)` so the
-  event loop is never blocked. Logs success/failure; a one-time job removes its store row after firing.
+  event loop is never blocked. `send_command` retries transient failures internally.
+  - **One-time job:** remove its store row after the fire **attempt** (success *or* exhausted retries) — a
+    one-time schedule is consumed once. Log the outcome.
+  - **Recurring job:** keep the row; on failure just log it and fire again next occurrence.
 - BLE-device schedules are ignored here (they use on-device timers).
 
 ### 6. `schedule_device` / `cancel_schedule` — branch by device type (schedules.py)
-- **Cloud device:** store the row in `ScheduleStore` (as today) and register/cancel the corresponding
-  JobQueue job by name `switchbot-cloud:{id}`. No BLE write.
+- **Cloud device — add (atomic):** insert the row, then register the JobQueue job `switchbot-cloud:{id}`.
+  **If registration raises, roll back — `store.remove_id(id)`** and return an error, so `get_schedule`
+  never shows a garden schedule that can't fire. (Mirrors the existing BLE rollback in `_schedule_impl`,
+  which `remove_id`s on write failure.) A test covers this add-rollback. No BLE write.
+- **Cloud device — cancel:** remove the job by name, then the store row; if job removal fails, keep the row
+  and report so a retry works (mirrors the BLE cancel rollback in `_cancel_impl`).
 - **BLE device:** unchanged (write on-device timer).
 - `get_schedule` already reads the store → works for both.
 - **Wiring:** the schedule tools need the JobQueue to register/cancel cloud jobs. `build_schedule_tools`
@@ -111,13 +125,22 @@ A device is routed by its config:
 
 - `.env`: `SWITCHBOT_TOKEN`, `SWITCHBOT_SECRET` (already added on the box).
 - `devices.yaml` garden entry: replace empty `ble_id` with `cloud_id: "EECE111B5B1C"`.
-- `config.py`: read `SWITCHBOT_TOKEN`/`SWITCHBOT_SECRET` into `Config`; expose to the cloud client + tools.
+- `config.py`: read `SWITCHBOT_TOKEN`/`SWITCHBOT_SECRET` and `HOME_TZ` (default `Asia/Jerusalem`) into
+  `Config`; expose to the cloud client, scheduler, and tools.
+
+### 8. `list_devices` / `battery_status` (home.py) — cloud awareness (minor)
+- `list_devices`: already iterates the registry, so garden appears — ensure it doesn't assume `ble_id`,
+  and label cloud devices (e.g. "garden — cloud").
+- `battery_status`: for a cloud device, read battery via the cloud **status** endpoint
+  (`GET /v1.1/devices/{id}/status` → `battery`) instead of BLE; BLE devices unchanged.
 
 ## Error handling
 
 - Immediate cloud failure → user-facing Hebrew error; nothing silently swallowed.
-- Scheduled cloud failure → logged (with device + command, never secrets); scheduler keeps running; the
-  schedule stays (recurring will try again next occurrence).
+- Scheduled cloud failure → logged (device + command, **never** secrets); scheduler keeps running.
+  Policy (matches §5): a **one-time** schedule is removed after the fire attempt regardless of outcome
+  (consumed once); a **recurring** schedule stays and fires again next occurrence.
+  *(Future enhancement, non-goal now: Telegram-notify the group on a scheduled-command failure.)*
 - Missing token/secret → cloud routing disabled with a startup warning (like the Roborock gate); garden
   commands return a clear "cloud not configured" message.
 
@@ -127,8 +150,12 @@ A device is routed by its config:
   transient, no secrets in logs.
 - **Routing:** `control_device` on the garden calls the cloud seam (not BLE); on a BLE bot calls BLE.
   `resolve_action` still applies (press/inversion) before mapping.
-- **Scheduler:** frozen clock; assert `run_daily`/`run_once` registered with home tz + correct name;
-  startup drops expired one-time rows; callback maps action → command and calls the cloud seam.
+- **Scheduler:** frozen clock; assert `run_daily`/`run_once` registered with the explicit `ZoneInfo` +
+  correct `switchbot-cloud:{id}` name; `fire_at` string is parsed to a datetime; startup drops expired
+  one-time rows (no late fire); callback maps action → command and calls the cloud seam; one-time row
+  removed after the fire attempt, recurring row kept.
+- **Atomicity:** `schedule_device` on a cloud device rolls back (`remove_id`) when scheduler registration
+  raises — `get_schedule` shows nothing afterward.
 - Full suite stays green; no network in the automated suite.
 
 ## Deployment
