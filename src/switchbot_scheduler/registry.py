@@ -9,6 +9,7 @@ class Device:
     ble_id: str
     inverted: bool = False
     mode: str = "switch"   # "switch" (on/off) or "press" (momentary toggle)
+    cloud_id: str = ""
 
 
 class Registry:
@@ -32,6 +33,7 @@ class Registry:
                 ble_id=cfg.get("ble_id", ""),
                 inverted=cfg.get("inverted", False),
                 mode=cfg.get("mode", "switch"),
+                cloud_id=cfg.get("cloud_id", ""),
             )
             for name, cfg in data["devices"].items()
         ]
@@ -45,6 +47,12 @@ class Registry:
 
     def ble_id(self, name: str) -> str:
         return self._by_name[name].ble_id
+
+    def is_cloud(self, name: str) -> bool:
+        return bool(self._by_name[name].cloud_id)
+
+    def cloud_id(self, name: str) -> str:
+        return self._by_name[name].cloud_id
 
     def is_inverted(self, name: str) -> bool:
         return self._by_name[name].inverted
