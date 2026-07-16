@@ -79,11 +79,32 @@ _CANCEL_SCHEMA = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
 
 
+def _normalize_bound(value, now):
+    """Google's events.list needs RFC3339 *with* a timezone; the model often sends a bare date
+    ('2026-07-16') or a tz-less datetime, both of which the API rejects with 400. Parse loosely and
+    attach the local tz (from `now`) so a bound the model supplies never fails. Returns None if the
+    value is empty or unparseable, so the caller falls back to its tz-aware default."""
+    if not value:
+        return None
+    from datetime import date, datetime
+    s = str(value).strip()
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            dt = datetime.combine(date.fromisoformat(s), datetime.min.time())
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=now.tzinfo)
+    return dt.isoformat()
+
+
 def _find_impl(args, *, service, calendar_ids, write_id, now_fn):
     query = (args.get("query") or "").strip() or None
     now = now_fn()
-    time_min = args.get("time_min") or ((now - timedelta(days=30)) if query else now).isoformat()
-    time_max = args.get("time_max") or ((now + timedelta(days=180)) if query else now + timedelta(days=7)).isoformat()
+    time_min = _normalize_bound(args.get("time_min"), now) or ((now - timedelta(days=30)) if query else now).isoformat()
+    time_max = _normalize_bound(args.get("time_max"), now) or ((now + timedelta(days=180)) if query else now + timedelta(days=7)).isoformat()
     chosen = {}
     for cal_id in calendar_ids:
         params = {"calendarId": cal_id, "timeMin": time_min, "timeMax": time_max,

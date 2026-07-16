@@ -1,18 +1,18 @@
 devices:
   living_room:
     aliases: ["living room", "סלון", "salon"]
-    ble_id: "40EF82E1-E89F-58C5-930C-58D04473828E"   # CoreBluetooth UUID (macOS)
+    ble_id: "F2:B2:00:46:37:79"   # Linux MAC (mapped by press-test 2026-07-16); was macOS UUID 40EF82E1-...
     inverted: true  # mounted upside down; on/off physically swapped
   dining:
     aliases: ["dining", "פינת אוכל", "dining nook"]
-    ble_id: "82433425-0CB9-60A7-199F-219B87D259FC"
+    ble_id: "F2:B2:01:C6:67:79"   # Linux MAC (press-test 2026-07-16)
   ac:
     aliases: ["ac", "air conditioner", "מזגן"]
-    ble_id: "3FD44C5A-BFCE-66AD-9A89-68EFDDC28699"
-    mode: press   # momentary toggle only (no real on/off); on/off intent -> a press
+    ble_id: "F2:B2:06:46:4C:6C"   # Linux MAC (press-test 2026-07-16, AC=closest)
+    mode: press   # momentary toggle only
   kitchen:
     aliases: ["kitchen", "מטבח", "kitchen bot"]
-    ble_id: "0F4665AE-85F1-3777-2F06-BEA04F8008B7"   # CoreBluetooth UUID (macOS); confirmed by watched press 2026-07-09
+    ble_id: "D8:66:D3:5D:B2:96"   # Linux MAC (press-test 2026-07-16)
   garden:
     aliases: ["garden", "גינה", "yard"]
-    ble_id: "C1E03979-593D-0C27-2A35-221EEF17E12E"   # CoreBluetooth UUID (macOS); confirmed by watched press 2026-07-09
+    ble_id: ""   # garden bot not connectable during setup (EE:CE:11:1B:5B:1C advertises type H but wont connect — check power/hub). was macOS C1E03979-...

@@ -71,6 +71,30 @@ def test_find_events_default_range_one_week(tmp_path):
     assert kw["timeMin"].startswith("2026-07-10") and kw["timeMax"].startswith("2026-07-17")
 
 
+def test_find_events_normalizes_date_only_bound(tmp_path):
+    # the model often supplies a bare date; Google's events.list 400s without a tz-stamped RFC3339
+    tools, svc, _ = _tools({"fam": [], "me": []}, tmp_path)
+    tools["find_events"].impl({"time_min": "2026-07-16", "time_max": "2026-07-18"})
+    kw = svc.events().calls[0][1]
+    assert datetime.fromisoformat(kw["timeMin"]).tzinfo is not None
+    assert datetime.fromisoformat(kw["timeMax"]).tzinfo is not None
+    assert kw["timeMin"].startswith("2026-07-16")
+
+
+def test_find_events_normalizes_tzless_datetime_bound(tmp_path):
+    tools, svc, _ = _tools({"fam": [], "me": []}, tmp_path)
+    tools["find_events"].impl({"time_min": "2026-07-16T08:00:00"})
+    kw = svc.events().calls[0][1]
+    assert datetime.fromisoformat(kw["timeMin"]).tzinfo is not None
+
+
+def test_find_events_preserves_tz_aware_bound(tmp_path):
+    tools, svc, _ = _tools({"fam": [], "me": []}, tmp_path)
+    tools["find_events"].impl({"time_min": "2026-07-16T08:00:00+03:00"})
+    kw = svc.events().calls[0][1]
+    assert kw["timeMin"].startswith("2026-07-16T08:00:00+03:00")
+
+
 def test_find_events_dedups_same_instant_across_offsets(tmp_path):
     # same event (uid A), same instant expressed in different offsets on the two calendars
     fam = _ev("A", "2026-07-11T10:00:00+03:00", "Dentist", "efam")
