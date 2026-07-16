@@ -174,8 +174,9 @@ def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
         removed = store.remove(name, time_str)
         if removed == 0:
             return f"nothing scheduled matched for {name}."
-        for r in removed_rows:
-            scheduler.unschedule(r["id"])
+        if scheduler is not None:
+            for r in removed_rows:
+                scheduler.unschedule(r["id"])
     else:
         removed = store.remove(name, time_str)
         if removed == 0:

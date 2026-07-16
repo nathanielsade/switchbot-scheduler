@@ -5,7 +5,7 @@ from . import switchbot_cloud
 
 log = logging.getLogger("home_agent")
 _PREFIX = "switchbot-cloud:"
-_DAY_NUM = {"sun": 6, "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5}  # PTB: Mon=0..Sun=6
+_DAY_NUM = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}  # PTB v20+: Sun=0..Sat=6
 
 
 def _job_name(row_id): return f"{_PREFIX}{row_id}"

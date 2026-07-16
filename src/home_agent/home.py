@@ -125,7 +125,11 @@ def _battery_impl(args, *, registry, battery_fn, cloud_battery_fn) -> str:
     for name in targets:
         if registry.is_cloud(name):
             try:
-                lines.append(f"{name}: {cloud_battery_fn(registry.cloud_id(name))}%")
+                v = cloud_battery_fn(registry.cloud_id(name))
+                if v is not None:
+                    lines.append(f"{name}: {v}%")
+                else:
+                    lines.append(f"{name}: battery unavailable")
             except Exception as e:
                 lines.append(f"{name}: unavailable — {e}")
             continue

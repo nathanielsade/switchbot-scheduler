@@ -10,12 +10,12 @@ TZ = ZoneInfo("Asia/Jerusalem")
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=TZ)
 
 class FakeJob:
-    def __init__(self, name, cb=None): self.name = name; self.removed = False; self.cb = cb
+    def __init__(self, name, cb=None, days=None): self.name = name; self.removed = False; self.cb = cb; self.days = days
     def schedule_removal(self): self.removed = True
 
 class FakeJobQueue:
     def __init__(self): self.jobs = []
-    def run_daily(self, cb, time, days, name): self.jobs.append(FakeJob(name, cb)); return self.jobs[-1]
+    def run_daily(self, cb, time, days, name): job = FakeJob(name, cb, days); self.jobs.append(job); return job
     def run_once(self, cb, when, name): self.jobs.append(FakeJob(name, cb)); return self.jobs[-1]
     def get_jobs_by_name(self, name): return [j for j in self.jobs if j.name == name and not j.removed]
 
@@ -113,3 +113,30 @@ def test_recurring_fire_keeps_row(tmp_path):
     rows = store.list("garden")
     assert len(rows) == 1
     assert rows[0]["id"] == rid
+
+def test_weekday_mapping_monday(tmp_path):
+    """Regression: _DAY_NUM must map mon→1 for PTB v20+ (Sun=0..Sat=6)."""
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    rid = store.add("garden", "on", "18:00", ["mon"], False, None)
+    row = store.list("garden")[0]
+    cs.schedule_row(row)
+    job = jq.get_jobs_by_name(f"switchbot-cloud:{rid}")[0]
+    assert job.days == (1,), f"Expected (1,) for monday, got {job.days}"
+
+def test_weekday_mapping_sunday(tmp_path):
+    """Regression: _DAY_NUM must map sun→0 for PTB v20+ (Sun=0..Sat=6)."""
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    rid = store.add("garden", "on", "18:00", ["sun"], False, None)
+    row = store.list("garden")[0]
+    cs.schedule_row(row)
+    job = jq.get_jobs_by_name(f"switchbot-cloud:{rid}")[0]
+    assert job.days == (0,), f"Expected (0,) for sunday, got {job.days}"
+
+def test_weekday_mapping_multiple_days(tmp_path):
+    """Regression: _DAY_NUM must map multiple days correctly."""
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    rid = store.add("garden", "on", "18:00", ["mon", "tue", "fri"], False, None)
+    row = store.list("garden")[0]
+    cs.schedule_row(row)
+    job = jq.get_jobs_by_name(f"switchbot-cloud:{rid}")[0]
+    assert job.days == (1, 2, 5), f"Expected (1, 2, 5) for mon/tue/fri, got {job.days}"
