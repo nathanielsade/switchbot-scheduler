@@ -43,8 +43,9 @@ def _one_time_target(time_str, now):
 _SCHEDULE_SCHEMA = {"type": "function", "function": {
     "name": "schedule_device",
     "description": (
-        "Schedule a SwitchBot device to turn on/off (or press) at a clock time, programmed into the "
-        "device's own timer so it fires even if this computer is off. `time` is 24-hour \"HH:MM\". "
+        "Schedule a SwitchBot device to turn on/off (or press) at a clock time. Bluetooth devices are "
+        "programmed into the device's own timer (they fire even if this computer is off); cloud devices "
+        "(e.g. the garden) are fired by the home-agent, so it must be running. `time` is 24-hour \"HH:MM\". "
         "Omit `days` for a ONE-TIME timer (fires at the next occurrence of that time); give `days` for "
         "a RECURRING timer. For relative requests like 'in 5 minutes', first call get_current_time and "
         "compute the HH:MM. Each device holds at most 5 timers. Report what you scheduled, in the user's language."
