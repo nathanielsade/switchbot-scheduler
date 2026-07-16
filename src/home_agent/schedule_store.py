@@ -32,18 +32,18 @@ class ScheduleStore:
         with closing(sqlite3.connect(self.db_path)) as conn:
             if device is None:
                 rows = conn.execute(
-                    "SELECT device, action, time, days, once, fire_at FROM schedules "
+                    "SELECT id, device, action, time, days, once, fire_at FROM schedules "
                     "ORDER BY device, time"
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT device, action, time, days, once, fire_at FROM schedules "
+                    "SELECT id, device, action, time, days, once, fire_at FROM schedules "
                     "WHERE device = ? ORDER BY time",
                     (device,),
                 ).fetchall()
-        return [{"device": d, "action": a, "time": t,
+        return [{"id": i, "device": d, "action": a, "time": t,
                  "days": [x for x in dd.split(",") if x], "once": bool(o), "fire_at": f}
-                for d, a, t, dd, o, f in rows]
+                for i, d, a, t, dd, o, f in rows]
 
     def remove(self, device, time=None):
         with closing(sqlite3.connect(self.db_path)) as conn:

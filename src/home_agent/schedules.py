@@ -43,8 +43,9 @@ def _one_time_target(time_str, now):
 _SCHEDULE_SCHEMA = {"type": "function", "function": {
     "name": "schedule_device",
     "description": (
-        "Schedule a SwitchBot device to turn on/off (or press) at a clock time, programmed into the "
-        "device's own timer so it fires even if this computer is off. `time` is 24-hour \"HH:MM\". "
+        "Schedule a SwitchBot device to turn on/off (or press) at a clock time. Bluetooth devices are "
+        "programmed into the device's own timer (they fire even if this computer is off); cloud devices "
+        "(e.g. the garden) are fired by the home-agent, so it must be running. `time` is 24-hour \"HH:MM\". "
         "Omit `days` for a ONE-TIME timer (fires at the next occurrence of that time); give `days` for "
         "a RECURRING timer. For relative requests like 'in 5 minutes', first call get_current_time and "
         "compute the HH:MM. Each device holds at most 5 timers. Report what you scheduled, in the user's language."
@@ -81,7 +82,7 @@ def _program_device(device, store, registry, write_fn):
     write_fn(registry.ble_id(device), alarms)
 
 
-def _schedule_impl(args, *, registry, store, write_fn, now_fn):
+def _schedule_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
     spoken = (args.get("device") or "").strip()
     action = (args.get("action") or "").strip().lower()
     time_str = (args.get("time") or "").strip()
@@ -100,14 +101,20 @@ def _schedule_impl(args, *, registry, store, write_fn, now_fn):
     except (ValueError, AttributeError) as e:
         return f"couldn't set the timer: {e}"
     row_id = store.add(name, action, time_str, days, once, fire_at)
-    try:
-        _program_device(name, store, registry, write_fn)
-    except ScheduleError as e:
-        store.remove_id(row_id)
-        return f"can't schedule that: {e}"
-    except Exception as e:
-        store.remove_id(row_id)
-        return f"couldn't reach {name} — timer not set ({e})"
+    if registry.is_cloud(name):
+        try:
+            scheduler.schedule_row({"id": row_id, "device": name, "action": action,
+                                    "time": time_str, "days": days, "once": once, "fire_at": fire_at})
+        except Exception as e:
+            store.remove_id(row_id)
+            return f"couldn't schedule {name} ({e}) — timer not set"
+    else:
+        try:
+            _program_device(name, store, registry, write_fn)
+        except ScheduleError as e:
+            store.remove_id(row_id); return f"can't schedule that: {e}"
+        except Exception as e:
+            store.remove_id(row_id); return f"couldn't reach {name} — timer not set ({e})"
     when = "one-time" if once else describe_days(days)
     return f"{name}: {action} at {time_str} ({when}) ✅"
 
@@ -156,22 +163,30 @@ def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
     return readback(Schedule([DeviceSchedule(d, evs) for d, evs in by_dev.items()]))
 
 
-def _cancel_impl(args, *, registry, store, write_fn, now_fn):
+def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
     spoken = (args.get("device") or "").strip()
     time_str = (args.get("time") or "").strip() or None
     name = registry.resolve(spoken)
     if name is None:
         return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
     removed_rows = [r for r in store.list(name) if time_str is None or r["time"] == time_str]
-    removed = store.remove(name, time_str)
-    if removed == 0:
-        return f"nothing scheduled matched for {name}."
-    try:
-        _program_device(name, store, registry, write_fn)
-    except Exception as e:
-        for r in removed_rows:   # roll back so the record matches the Bot and a retry re-tries
-            store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
-        return f"couldn't reprogram {name} ({e}) — timer(s) not cancelled, try again."
+    if registry.is_cloud(name):
+        removed = store.remove(name, time_str)
+        if removed == 0:
+            return f"nothing scheduled matched for {name}."
+        if scheduler is not None:
+            for r in removed_rows:
+                scheduler.unschedule(r["id"])
+    else:
+        removed = store.remove(name, time_str)
+        if removed == 0:
+            return f"nothing scheduled matched for {name}."
+        try:
+            _program_device(name, store, registry, write_fn)
+        except Exception as e:
+            for r in removed_rows:   # roll back so the record matches the Bot and a retry re-tries
+                store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
+            return f"couldn't reprogram {name} ({e}) — timer(s) not cancelled, try again."
     what = ", ".join(f"{r['action']} at {r['time']}" for r in removed_rows)
     return f"{name}: cancelled {what} ✅"
 
@@ -180,17 +195,17 @@ def _now():
     return datetime.now().astimezone()
 
 
-def build_schedule_tools(registry, store, *, write_fn=None, now_fn=None):
+def build_schedule_tools(registry, store, *, write_fn=None, now_fn=None, scheduler=None):
     write_fn = write_fn or _program_bot
     now_fn = now_fn or _now
     return [
         Tool(name="schedule_device", schema=_SCHEDULE_SCHEMA,
              impl=lambda args: _schedule_impl(
-                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
+                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
         Tool(name="get_schedule", schema=_GET_SCHEDULE_SCHEMA,
              impl=lambda args: _get_schedule_impl(
                  args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
         Tool(name="cancel_schedule", schema=_CANCEL_SCHEMA,
              impl=lambda args: _cancel_impl(
-                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
+                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
     ]

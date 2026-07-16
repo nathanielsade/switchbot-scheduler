@@ -33,6 +33,9 @@ class Config:
     discount_num: str = ""
     finance_node_bin: str = "node"
     finance_collector_script: str = DEFAULT_COLLECTOR_SCRIPT
+    switchbot_token: str = ""
+    switchbot_secret: str = ""
+    home_tz: str = "Asia/Jerusalem"
 
 
 def _parse_chat_ids(raw: str) -> set[int]:
@@ -71,4 +74,7 @@ def load_config(path: str | None = None) -> Config:
         discount_num=os.environ.get("DISCOUNT_NUM", ""),
         finance_node_bin=os.environ.get("FINANCE_NODE_BIN", "node"),
         finance_collector_script=os.environ.get("FINANCE_COLLECTOR_SCRIPT", DEFAULT_COLLECTOR_SCRIPT),
+        switchbot_token=os.environ.get("SWITCHBOT_TOKEN", ""),
+        switchbot_secret=os.environ.get("SWITCHBOT_SECRET", ""),
+        home_tz=os.environ.get("HOME_TZ", "Asia/Jerusalem"),
     )

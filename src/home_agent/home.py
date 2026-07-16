@@ -1,10 +1,11 @@
 import logging
 import os
 
-from switchbot_scheduler.actuator import run_immediate
+from switchbot_scheduler.actuator import run_immediate, resolve_action
 from switchbot_scheduler.model import ImmediateAction
 from switchbot_scheduler.registry import Registry
 
+from . import switchbot_cloud
 from .tools import Tool
 
 log = logging.getLogger("home_agent")
@@ -51,6 +52,8 @@ _CMD_INFO = 0x02  # 0x57 0x02: "get device basic info"; response carries battery
 
 
 def _device_type(device) -> str:
+    if device.cloud_id:
+        return "cloud-controlled"
     if device.mode == "press":
         return "AC / momentary toggle"
     if device.inverted:
@@ -66,7 +69,7 @@ def _list_impl(args, *, registry) -> str:
     return "\n".join(lines)
 
 
-def _control_impl(args, *, registry, actuate_fn) -> str:
+def _control_impl(args, *, registry, actuate_fn, cloud_send_fn) -> str:
     spoken = (args.get("device") or "").strip()
     action = (args.get("action") or "").strip().lower()
     name = registry.resolve(spoken)
@@ -74,6 +77,14 @@ def _control_impl(args, *, registry, actuate_fn) -> str:
         return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
     if action not in ("on", "off", "press"):
         return f"unknown action '{action}'. Use on, off, or press."
+    if registry.is_cloud(name):
+        eff = resolve_action(name, action, registry)
+        try:
+            cloud_send_fn(registry.cloud_id(name), switchbot_cloud.to_command(eff))
+        except Exception as e:
+            return f"{name}: failed — {e}"
+        reported = "press" if registry.is_press_mode(name) else action
+        return f"{name}: {reported} ✅"
     result = run_immediate([ImmediateAction(name, action)], registry, actuate_fn=actuate_fn)[0]
     if result.ok:
         reported = "press" if registry.is_press_mode(name) else action
@@ -101,7 +112,7 @@ def _run_battery(ble_id: str) -> int:
     return asyncio.run(_read())
 
 
-def _battery_impl(args, *, registry, battery_fn) -> str:
+def _battery_impl(args, *, registry, battery_fn, cloud_battery_fn) -> str:
     spoken = (args.get("device") or "").strip()
     if spoken:
         name = registry.resolve(spoken)
@@ -112,6 +123,16 @@ def _battery_impl(args, *, registry, battery_fn) -> str:
         targets = registry.known_names()
     lines = []
     for name in targets:
+        if registry.is_cloud(name):
+            try:
+                v = cloud_battery_fn(registry.cloud_id(name))
+                if v is not None:
+                    lines.append(f"{name}: {v}%")
+                else:
+                    lines.append(f"{name}: battery unavailable")
+            except Exception as e:
+                lines.append(f"{name}: unavailable — {e}")
+            continue
         ble_id = registry.ble_id(name)
         if not ble_id:
             lines.append(f"{name}: unavailable — no ble_id")
@@ -138,13 +159,16 @@ def load_home_tools(config) -> list[Tool]:
     return build_home_tools(Registry.load(path))
 
 
-def build_home_tools(registry, *, actuate_fn=None, battery_fn=None) -> list[Tool]:
+def build_home_tools(registry, *, actuate_fn=None, battery_fn=None,
+                     cloud_send_fn=None, cloud_battery_fn=None) -> list[Tool]:
     battery_fn = battery_fn or _run_battery
     return [
         Tool(name="control_device", schema=_CONTROL_SCHEMA,
-             impl=lambda args: _control_impl(args, registry=registry, actuate_fn=actuate_fn)),
+             impl=lambda args: _control_impl(args, registry=registry,
+                 actuate_fn=actuate_fn, cloud_send_fn=cloud_send_fn)),
         Tool(name="list_devices", schema=_LIST_SCHEMA,
              impl=lambda args: _list_impl(args, registry=registry)),
         Tool(name="battery_status", schema=_BATTERY_SCHEMA,
-             impl=lambda args: _battery_impl(args, registry=registry, battery_fn=battery_fn)),
+             impl=lambda args: _battery_impl(args, registry=registry,
+                 battery_fn=battery_fn, cloud_battery_fn=cloud_battery_fn)),
     ]

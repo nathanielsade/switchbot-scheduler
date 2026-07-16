@@ -100,11 +100,30 @@ def build_application(config, *, client=None, conversation=None):
     cal_service = load_calendar_service(config)
     cal_pending = CalendarPending(config.db_path) if cal_service is not None else None
     registry = load_registry(config)
+
+    # Create the Application first so app.job_queue exists for the box-side cloud scheduler.
+    app = Application.builder().token(config.telegram_bot_token).build()
+
+    # SwitchBot Cloud seams for out-of-BLE-range devices (e.g. the garden). None -> cloud disabled.
+    cloud_send_fn = cloud_battery_fn = scheduler = None
+    if config.switchbot_token and config.switchbot_secret:
+        from zoneinfo import ZoneInfo
+        from . import switchbot_cloud
+        from .cloud_scheduler import CloudScheduler
+        _tok, _sec = config.switchbot_token, config.switchbot_secret
+        cloud_send_fn = lambda cid, cmd: switchbot_cloud.send_command(cid, cmd, token=_tok, secret=_sec)
+        cloud_battery_fn = lambda cid: switchbot_cloud.get_status(cid, token=_tok, secret=_sec).get("battery")
+        if registry is not None and app.job_queue is not None:
+            scheduler = CloudScheduler(app.job_queue, ScheduleStore(config.db_path), registry,
+                                       send_command_fn=cloud_send_fn, tz=ZoneInfo(config.home_tz))
+    elif registry is not None and any(registry.is_cloud(n) for n in registry.known_names()):
+        log.warning("SWITCHBOT_TOKEN/SECRET unset — cloud devices (e.g. garden) disabled")
+
     tools = list(DEFAULT_TOOLS)
     tools += build_shopping_tools(ShoppingStore(config.db_path))
     if registry is not None:
-        tools += build_home_tools(registry)
-        tools += build_schedule_tools(registry, ScheduleStore(config.db_path))
+        tools += build_home_tools(registry, cloud_send_fn=cloud_send_fn, cloud_battery_fn=cloud_battery_fn)
+        tools += build_schedule_tools(registry, ScheduleStore(config.db_path), scheduler=scheduler)
     else:
         log.warning("devices file not found at %s — home control + scheduling disabled", config.devices_path)
     rr_client = load_roborock_client(config)
@@ -113,7 +132,8 @@ def build_application(config, *, client=None, conversation=None):
     if finance_configured(config):
         tools += build_finance_tools(FinanceStore(config.db_path), fetch_fn=make_collector_fetch(config))
     fact_store = FactStore(config.db_path)
-    app = Application.builder().token(config.telegram_bot_token).build()
+    if scheduler is not None:
+        scheduler.reconcile()   # arm existing cloud schedules on startup
 
     async def on_message(update, context):
         message = update.effective_message
