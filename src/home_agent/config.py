@@ -10,6 +10,8 @@ DEFAULT_DEVICES_PATH = "devices.yaml"
 DEFAULT_ROOMS_PATH = "roborock_rooms.yaml"
 DEFAULT_ROBOROCK_USERDATA_PATH = "roborock_userdata.json"
 DEFAULT_COLLECTOR_SCRIPT = "collector/scrape_discount.js"
+DEFAULT_MAX_COLLECTOR_SCRIPT = "collector/scrape_max.js"
+DEFAULT_FINANCE_START_DAYS = 400
 
 
 @dataclass
@@ -33,9 +35,17 @@ class Config:
     discount_num: str = ""
     finance_node_bin: str = "node"
     finance_collector_script: str = DEFAULT_COLLECTOR_SCRIPT
+    max_username: str = ""
+    max_password: str = ""
+    max_collector_script: str = DEFAULT_MAX_COLLECTOR_SCRIPT
+    finance_start_days: int = DEFAULT_FINANCE_START_DAYS
     switchbot_token: str = ""
     switchbot_secret: str = ""
     home_tz: str = "Asia/Jerusalem"
+
+
+def max_configured(config: "Config") -> bool:
+    return bool(config.max_username and config.max_password)
 
 
 def _parse_chat_ids(raw: str) -> set[int]:
@@ -74,6 +84,10 @@ def load_config(path: str | None = None) -> Config:
         discount_num=os.environ.get("DISCOUNT_NUM", ""),
         finance_node_bin=os.environ.get("FINANCE_NODE_BIN", "node"),
         finance_collector_script=os.environ.get("FINANCE_COLLECTOR_SCRIPT", DEFAULT_COLLECTOR_SCRIPT),
+        max_username=os.environ.get("MAX_USERNAME", ""),
+        max_password=os.environ.get("MAX_PASSWORD", ""),
+        max_collector_script=os.environ.get("MAX_COLLECTOR_SCRIPT", DEFAULT_MAX_COLLECTOR_SCRIPT),
+        finance_start_days=int(os.environ.get("FINANCE_START_DAYS", str(DEFAULT_FINANCE_START_DAYS))),
         switchbot_token=os.environ.get("SWITCHBOT_TOKEN", ""),
         switchbot_secret=os.environ.get("SWITCHBOT_SECRET", ""),
         home_tz=os.environ.get("HOME_TZ", "Asia/Jerusalem"),
