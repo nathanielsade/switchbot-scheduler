@@ -38,6 +38,13 @@ def _norm_desc(description) -> str:
     return _WS.sub(" ", (description or "").strip().lower())
 
 
+def _card4(value) -> str:
+    """Canonical trailing-4-digits key for matching a bank card-bill's 'ויזה NNNN' number
+    against a Max account, which may arrive masked/padded (e.g. '****1743'). Digits only, last 4."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-4:]
+
+
 def _is_card_payment(description, card_numbers):
     """True iff the normalized description is a Discount card-bill/credit line for one of card_numbers.
 
@@ -225,15 +232,15 @@ def _spendable_rows(store, frm, to):
     Returns (kept_rows, partial_flag) — partial_flag is True iff a bank-level fallback (an
     uncovered card's bill) was kept, meaning the itemized detail isn't available for this period.
     """
-    covered = store.covered_cards("max", frm, to)
+    covered = {_card4(c) for c in store.covered_cards("max", frm, to)}
     kept = []
     partial_flag = False
     for row in store.transactions_between(frm, to):
         m = _CARD_BILL_RE.search(_norm_desc(row["description"]))
-        card = m.group(2) if m else None
+        card = _card4(m.group(2)) if m else None
         if card is not None and card in covered:
             continue  # covered card's bank bill -> exclude (both income & expense)
-        if row["source"] == "max" and row["account"] not in covered:
+        if row["source"] == "max" and _card4(row["account"]) not in covered:
             continue  # uncovered Max rows -> exclude (symmetric)
         kept.append(row)
         if card is not None:  # a card-bill line we KEPT (its card is not covered)

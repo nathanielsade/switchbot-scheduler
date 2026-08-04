@@ -3,7 +3,7 @@ const { createScraper, CompanyTypes } = require('israeli-bank-scrapers');
 
 (async () => {
   try {
-    const scraper = createScraper({ companyId: CompanyTypes.max, startDate: new Date(process.env.FINANCE_START_DATE), combineInstallments: false, showBrowser: false });
+    const scraper = createScraper({ companyId: CompanyTypes.max, startDate: new Date(process.env.FINANCE_START_DATE || Date.now() - 365 * 864e5), combineInstallments: false, showBrowser: false });
     const result = await scraper.scrape({ username: process.env.MAX_USERNAME, password: process.env.MAX_PASSWORD });
     if (!result.success) { console.error(`scrape failed: ${result.errorType} ${result.errorMessage || ''}`); process.exit(2); }
     const out = {
