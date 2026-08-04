@@ -1,3 +1,5 @@
+import os
+import tempfile
 from decimal import Decimal
 from home_agent.finance import normalize_contract, _to_agorot, _fingerprint, build_finance_tools
 from home_agent.finance_store import FinanceStore
@@ -48,6 +50,7 @@ def test_sync_finances_malformed_is_friendly():
 
 def test_sync_finances_store_error_is_friendly():
     class _BoomStore:
+        db_path = os.path.join(tempfile.mkdtemp(), "boom.db")  # lock lives next to the DB
         def record_snapshot(self, *a, **k): raise RuntimeError("db locked")
         def upsert_transactions(self, *a, **k): raise RuntimeError("db locked")
     tools = build_finance_tools(_BoomStore(), fetch_fns={"discount": make_fetch(contract())})

@@ -169,6 +169,22 @@ _FIND_SCHEMA = {"type": "function", "function": {
 
 
 def _sync_impl(args, *, store, fetch_fns, now_fn) -> str:
+    import fcntl
+    import os
+
+    # File-lock ONCE around the whole multi-source sync (spec §3): a second concurrent
+    # sync_finances is refused wholesale rather than interleaving between sources. The lock
+    # lives next to the DB; per-source fetchers no longer lock individually.
+    lock_path = os.path.join(os.path.dirname(store.db_path) or ".", ".finance_sync.lock")
+    with open(lock_path, "w") as lf:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "סנכרון פיננסי כבר רץ כרגע. נסו שוב עוד רגע."
+        return _sync_locked(store=store, fetch_fns=fetch_fns, now_fn=now_fn)
+
+
+def _sync_locked(*, store, fetch_fns, now_fn) -> str:
     now = now_fn()
     lines = []
     any_ok = False
@@ -372,7 +388,6 @@ def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
 
 
 def make_collector_fetch(config, source="discount"):
-    import fcntl
     import os
     import subprocess
 
@@ -390,20 +405,15 @@ def make_collector_fetch(config, source="discount"):
     if not os.path.isabs(script):
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # src/home_agent -> repo
         script = os.path.join(repo_root, script)
-    lock_path = os.path.join(os.path.dirname(config.db_path) or ".", ".finance_sync.lock")
 
     # Set FINANCE_START_DATE from config
     start_date_str = (_now() - timedelta(days=config.finance_start_days)).date().isoformat()
 
     def _fetch():
+        # Concurrency is guarded once around the whole sync in _sync_impl (spec §3); no lock here.
         env = {**os.environ, "FINANCE_START_DATE": start_date_str, **creds}
-        with open(lock_path, "w") as lf:
-            try:
-                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise RuntimeError("a finance sync is already running")
-            proc = subprocess.run([config.finance_node_bin, script], capture_output=True,
-                                  text=True, env=env, timeout=180, shell=False)
+        proc = subprocess.run([config.finance_node_bin, script], capture_output=True,
+                              text=True, env=env, timeout=180, shell=False)
         if proc.returncode != 0 or not proc.stdout.strip():
             raise RuntimeError(f"collector failed (rc={proc.returncode})")  # stderr NOT surfaced
         return json.loads(proc.stdout, parse_float=Decimal)
