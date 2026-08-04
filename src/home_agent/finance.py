@@ -384,7 +384,11 @@ _FORECAST_SCHEMA = {"type": "function", "function": {
 def _forecast_impl(args, *, store, now_fn) -> str:
     now = now_fn()
     lookback = (now.date() - timedelta(days=95)).isoformat()
-    recurring = _detect_recurring(store.transactions_between(lookback, now.date().isoformat()))
+    rows = store.transactions_between(lookback, now.date().isoformat())
+    # cash-flow = bank debits; a card's Max purchases are already inside its bank card-bill,
+    # so forecasting uses the bank feed only to avoid double-counting the debit (spec §4 P2a).
+    bank_rows = [t for t in rows if t["source"] == "discount"]
+    recurring = _detect_recurring(bank_rows)
     balance = store.current_balance_agorot()
     day = now.day
     remaining = sum(r["amount_agorot"] for r in recurring if r["day"] >= day)
