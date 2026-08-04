@@ -13,6 +13,7 @@ CATEGORIES = ("groceries", "rent", "salary", "utilities", "transport", "health",
               "restaurants", "subscriptions", "shopping", "cash", "transfer", "other")
 
 _WS = re.compile(r"\s+")
+_CARD_BILL_RE = re.compile(r"(חיוב|זיכוי)\s+לכרטיס\s+ויזה\s+(\d+)")
 
 
 def finance_configured(config) -> bool:
@@ -31,6 +32,17 @@ def _to_agorot(amount_str) -> int:
 
 def _norm_desc(description) -> str:
     return _WS.sub(" ", (description or "").strip().lower())
+
+
+def _is_card_payment(description, card_numbers):
+    """True iff the normalized description is a Discount card-bill/credit line for one of card_numbers.
+
+    Matches patterns like 'חיוב לכרטיס ויזה 1743' or 'זיכוי לכרטיס ויזה 1743'.
+    Robust to multiple spaces; card_numbers must be a set of digit strings.
+    Pure function; no DB access.
+    """
+    m = _CARD_BILL_RE.search(_norm_desc(description))
+    return bool(m and m.group(2) in card_numbers)
 
 
 def _fingerprint(source, account, identifier, txn_date, amount_agorot, description) -> str:
