@@ -15,6 +15,9 @@ CATEGORIES = ("groceries", "rent", "salary", "utilities", "transport", "health",
 
 _WS = re.compile(r"\s+")
 _CARD_BILL_RE = re.compile(r"(חיוב|זיכוי)\s+לכרטיס\s+ויזה\s+(\d+)")
+# Appended by spend tools when a card's itemized data isn't available for the range and we fall
+# back to the bank-level card-bill figures (Option A, spec §4). Shared by summary + by-category.
+_PARTIAL_FLAG = "(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)"
 
 
 def finance_configured(config) -> bool:
@@ -248,7 +251,7 @@ def _summary_impl(args, *, store, now_fn) -> str:
     out = (f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(expense)}\n"
            f"נטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}")
     if partial:
-        out += "\n(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)"
+        out += "\n" + _PARTIAL_FLAG
     return out
 
 
@@ -320,7 +323,7 @@ def _spending_impl(args, *, store, now_fn) -> str:
                      f"למשל: {', '.join(examples[:3])})")
     out = "\n".join(lines) if lines else "אין הוצאות בטווח."
     if partial:
-        out += "\n(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)"
+        out += "\n" + _PARTIAL_FLAG
     return out
 
 
