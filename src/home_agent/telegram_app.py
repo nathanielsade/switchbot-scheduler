@@ -6,6 +6,7 @@ from telegram.ext import Application, MessageHandler, filters
 
 from .agent import run_turn
 from .calendar_pending import CalendarPending
+from .config import max_configured
 from .facts import FactStore, build_memory_tools
 from .finance import build_finance_tools, finance_configured, make_collector_fetch
 from .finance_store import FinanceStore
@@ -130,7 +131,10 @@ def build_application(config, *, client=None, conversation=None):
     if rr_client is not None:
         tools += build_roborock_tools(rr_client, load_room_registry(config))
     if finance_configured(config):
-        tools += build_finance_tools(FinanceStore(config.db_path), fetch_fn=make_collector_fetch(config))
+        fetch_fns = {"discount": make_collector_fetch(config, "discount")}
+        if max_configured(config):
+            fetch_fns["max"] = make_collector_fetch(config, "max")
+        tools += build_finance_tools(FinanceStore(config.db_path), fetch_fns=fetch_fns)
     fact_store = FactStore(config.db_path)
     if scheduler is not None:
         scheduler.reconcile()   # arm existing cloud schedules on startup

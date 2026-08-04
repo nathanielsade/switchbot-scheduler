@@ -19,7 +19,7 @@ def _frozen():
 
 def _seeded():
     store = _store()
-    tools = build_finance_tools(store, now_fn=_frozen, fetch_fn=make_fetch(contract()))
+    tools = build_finance_tools(store, now_fn=_frozen, fetch_fns={"discount": make_fetch(contract())})
     _tool(tools, "sync_finances").impl({})
     return store, tools
 

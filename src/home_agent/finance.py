@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from .config import DEFAULT_FINANCE_START_DAYS
 from .tools import Tool
 
 log = logging.getLogger("home_agent")
@@ -167,20 +168,34 @@ _FIND_SCHEMA = {"type": "function", "function": {
     }, "additionalProperties": False}}}
 
 
-def _sync_impl(args, *, store, fetch_fn) -> str:
-    try:
-        data = fetch_fn()
-        txns, snaps, counts = normalize_contract(data)
-        for s in snaps:
-            store.record_snapshot(s["source"], s["account"], s["scraped_at"], s["balance_agorot"])
-        inserted, updated = store.upsert_transactions(txns)
-    except Exception as e:
-        log.warning("sync_finances failed: %s", e)
+def _sync_impl(args, *, store, fetch_fns, now_fn) -> str:
+    now = now_fn()
+    lines = []
+    any_ok = False
+    for source, fetch_fn in fetch_fns.items():
+        try:
+            data = fetch_fn()
+            txns, snaps, counts = normalize_contract(data)
+            for s in snaps:
+                store.record_snapshot(s["source"], s["account"], s["scraped_at"], s["balance_agorot"])
+            inserted, updated = store.upsert_transactions(txns)
+            coverage_start = getattr(fetch_fn, "coverage_start", None) or \
+                (now.date() - timedelta(days=DEFAULT_FINANCE_START_DAYS)).isoformat()
+            coverage_end = now.date().isoformat()
+            accounts = {t["account"] for t in txns} | {s["account"] for s in snaps}
+            for account in accounts:
+                store.record_coverage(source, account, coverage_start, coverage_end, now.isoformat())
+        except Exception as e:
+            log.warning("sync_finances failed for source=%s: %s", source, e)
+            lines.append(f"{source}: שגיאה (לא עודכן)")
+            continue
+        any_ok = True
+        dates = sorted(t["txn_date"] for t in txns) or [""]
+        dropped = f", {counts['dropped']} דולגו" if counts["dropped"] else ""
+        lines.append(f"{source}: {inserted} חדשות, {updated} עודכנו{dropped} (טווח {dates[0]}…{dates[-1]})")
+    if not any_ok:
         return "לא הצלחתי למשוך נתונים מהבנק כרגע. נסו שוב עוד רגע."
-    dates = sorted(t["txn_date"] for t in txns) or [""]
-    dropped = f", {counts['dropped']} דולגו" if counts["dropped"] else ""
-    return (f"נמשכו נתונים: {inserted} חדשות, {updated} עודכנו{dropped} "
-            f"(טווח {dates[0]}…{dates[-1]}) ✅")
+    return "נמשכו נתונים:\n" + "\n".join(lines) + " ✅"
 
 
 def _summary_impl(args, *, store, now_fn) -> str:
@@ -333,11 +348,12 @@ def _forecast_impl(args, *, store, now_fn) -> str:
     return "\n".join(lines)
 
 
-def build_finance_tools(store, *, now_fn=None, fetch_fn=None):
+def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
     now_fn = now_fn or _now
+    fetch_fns = fetch_fns or {}
     return [
         Tool(name="sync_finances", schema=_SYNC_SCHEMA,
-             impl=lambda a: _sync_impl(a, store=store, fetch_fn=fetch_fn)),
+             impl=lambda a: _sync_impl(a, store=store, fetch_fns=fetch_fns, now_fn=now_fn)),
         Tool(name="financial_summary", schema=_SUMMARY_SCHEMA,
              impl=lambda a: _summary_impl(a, store=store, now_fn=now_fn)),
         Tool(name="find_transactions", schema=_FIND_SCHEMA,
@@ -391,4 +407,5 @@ def make_collector_fetch(config, source="discount"):
         if proc.returncode != 0 or not proc.stdout.strip():
             raise RuntimeError(f"collector failed (rc={proc.returncode})")  # stderr NOT surfaced
         return json.loads(proc.stdout, parse_float=Decimal)
+    _fetch.coverage_start = start_date_str  # so _sync_impl records the SAME window the collector used
     return _fetch

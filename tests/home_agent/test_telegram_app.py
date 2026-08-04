@@ -143,7 +143,7 @@ def test_build_application_composes_finance_tools_when_configured(tmp_path, monk
                  devices_path=str(tmp_path / "none.yaml"),
                  discount_id="1", discount_password="p", discount_num="9")
     monkeypatch.setattr(ta, "make_collector_fetch",
-                        lambda cfg: (lambda: {"source": "discount",
+                        lambda cfg, source="discount": (lambda: {"source": source,
                                               "scraped_at": "2026-07-12T00:00:00Z", "accounts": []}))
     seen = {}
     real = ta.build_finance_tools
