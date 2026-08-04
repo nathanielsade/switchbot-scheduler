@@ -214,13 +214,42 @@ def _sync_locked(*, store, fetch_fns, now_fn) -> str:
     return "נמשכו נתונים:\n" + "\n".join(lines) + " ✅"
 
 
+def _spendable_rows(store, frm, to):
+    """Option A: drop the double-count between the bank's lump card-bill line and the itemized
+    Max purchases behind it. For a card whose Max data covers [frm, to], exclude the bank's
+    card-bill line (both income & expense sides) and keep the Max rows. For a card NOT covered,
+    keep the bank card-bill line and drop that card's Max rows. Never both, never neither.
+    Returns (kept_rows, partial_flag) — partial_flag is True iff a bank-level fallback (an
+    uncovered card's bill) was kept, meaning the itemized detail isn't available for this period.
+    """
+    covered = store.covered_cards("max", frm, to)
+    kept = []
+    partial_flag = False
+    for row in store.transactions_between(frm, to):
+        m = _CARD_BILL_RE.search(_norm_desc(row["description"]))
+        card = m.group(2) if m else None
+        if card is not None and card in covered:
+            continue  # covered card's bank bill -> exclude (both income & expense)
+        if row["source"] == "max" and row["account"] not in covered:
+            continue  # uncovered Max rows -> exclude (symmetric)
+        kept.append(row)
+        if card is not None:  # a card-bill line we KEPT (its card is not covered)
+            partial_flag = True
+    return kept, partial_flag
+
+
 def _summary_impl(args, *, store, now_fn) -> str:
     frm, to = _resolve_range(args, now_fn)
-    income, expense = store.sum_amounts(frm, to)
+    rows, partial = _spendable_rows(store, frm, to)
+    income = sum(r["amount_agorot"] for r in rows if r["amount_agorot"] > 0)
+    expense = sum(r["amount_agorot"] for r in rows if r["amount_agorot"] < 0)
     net = income + expense
     bal = store.current_balance_agorot()
-    return (f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(expense)}\n"
-            f"נטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}")
+    out = (f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(expense)}\n"
+           f"נטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}")
+    if partial:
+        out += "\n(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)"
+    return out
 
 
 def _find_impl(args, *, store) -> str:
