@@ -1,13 +1,13 @@
-// Discount collector: prints the finance JSON contract to stdout ONLY. Reads DISCOUNT_* from env.
+// Max collector: prints the finance JSON contract to stdout ONLY. Reads MAX_* from env.
 const { createScraper, CompanyTypes } = require('israeli-bank-scrapers');
 
 (async () => {
   try {
-    const scraper = createScraper({ companyId: CompanyTypes.discount, startDate: new Date(process.env.FINANCE_START_DATE || Date.now() - 365 * 864e5), combineInstallments: false, showBrowser: false });
-    const result = await scraper.scrape({ id: process.env.DISCOUNT_ID, password: process.env.DISCOUNT_PASSWORD, num: process.env.DISCOUNT_NUM });
+    const scraper = createScraper({ companyId: CompanyTypes.max, startDate: new Date(process.env.FINANCE_START_DATE), combineInstallments: false, showBrowser: false });
+    const result = await scraper.scrape({ username: process.env.MAX_USERNAME, password: process.env.MAX_PASSWORD });
     if (!result.success) { console.error(`scrape failed: ${result.errorType} ${result.errorMessage || ''}`); process.exit(2); }
     const out = {
-      source: 'discount', scraped_at: new Date().toISOString(),
+      source: 'max', scraped_at: new Date().toISOString(),
       accounts: (result.accounts || []).map(a => ({
         account: String(a.accountNumber),
         balance: a.balance == null ? '0' : Number(a.balance).toFixed(2),

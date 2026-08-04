@@ -355,19 +355,32 @@ def build_finance_tools(store, *, now_fn=None, fetch_fn=None):
     ]
 
 
-def make_collector_fetch(config):
+def make_collector_fetch(config, source="discount"):
     import fcntl
     import os
     import subprocess
-    script = config.finance_collector_script
+
+    # Pick script and creds by source
+    if source == "discount":
+        script = config.finance_collector_script
+        creds = {"DISCOUNT_ID": config.discount_id,
+                 "DISCOUNT_PASSWORD": config.discount_password, "DISCOUNT_NUM": config.discount_num}
+    elif source == "max":
+        script = config.max_collector_script
+        creds = {"MAX_USERNAME": config.max_username, "MAX_PASSWORD": config.max_password}
+    else:
+        raise ValueError(f"unknown finance source: {source}")
+
     if not os.path.isabs(script):
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # src/home_agent -> repo
         script = os.path.join(repo_root, script)
     lock_path = os.path.join(os.path.dirname(config.db_path) or ".", ".finance_sync.lock")
 
+    # Set FINANCE_START_DATE from config
+    start_date_str = (_now() - timedelta(days=config.finance_start_days)).date().isoformat()
+
     def _fetch():
-        env = {**os.environ, "DISCOUNT_ID": config.discount_id,
-               "DISCOUNT_PASSWORD": config.discount_password, "DISCOUNT_NUM": config.discount_num}
+        env = {**os.environ, "FINANCE_START_DATE": start_date_str, **creds}
         with open(lock_path, "w") as lf:
             try:
                 fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
