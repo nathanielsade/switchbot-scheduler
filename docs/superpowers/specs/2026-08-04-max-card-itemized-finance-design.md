@@ -35,6 +35,7 @@ Multi-source finance store (already keyed by `source, account, fingerprint`). `s
 
 ### 1. `collector/scrape_max.js` (new)
 Mirror of `scrape_discount.js`, `companyId: CompanyTypes.max`, creds from `process.env.MAX_USERNAME`/`MAX_PASSWORD`. Emits the **same JSON contract** the bank collector does (so `normalize_contract` handles it unchanged): `source:'max'`, one entry per card `account`, `transactions[]` with `identifier,date,processedDate,chargedAmount,chargedCurrency,description,status`. Loops `result.accounts` (multi-card ready). Prints JSON to stdout only; errors to stderr + non-zero exit.
+- **Python owns the scrape window (P2):** the `startDate` comes from `process.env.FINANCE_START_DATE` (ISO), set by `make_collector_fetch` — **not** hardcoded in the JS. Python therefore knows the window authoritatively (`coverage_start` = the value it passed; `coverage_end` = the sync time). Apply the same env to `scrape_discount.js` so both sources record coverage the same way.
 
 ### 2. Config (`config.py`)
 Add `max_username`, `max_password` (env `MAX_USERNAME`/`MAX_PASSWORD`), and `max_collector_script` (default `collector/scrape_max.js`). Add `max_configured(config) -> bool` (both creds set), mirroring `finance_configured`.
@@ -46,9 +47,12 @@ Add `max_username`, `max_password` (env `MAX_USERNAME`/`MAX_PASSWORD`), and `max
 
 ### 4. Option A — no double-counting (the core change)
 - **Card-payment = protected internal matcher (P1), NOT a user category rule.** A hardcoded `_is_card_payment(description, cards) -> bool` in `finance.py` — **not** stored in `category_rules`, so it's invisible to `list_category_rules`, can't be removed by `delete_category_rule`, and is applied with **priority over user rules** (a matched line is a card-payment regardless of any user rule, so a longer user pattern can never reintroduce the double-count). It matches a bank line as the payment for card `n` when the normalized description contains that card's bill phrase — matched **robustly** against the real Discount format (see the captured-fixture requirement in Testing), not a brittle exact substring.
-- **Reliable coverage via explicit metadata (P1a) — not `MAX(txn_date)`.** New `source_coverage` table; on each sync record per `(source, account)`: `coverage_start` (the scrape's startDate), `coverage_end` (scrape time), `scraped_at`. A card is **covered for `[frm,to]`** iff `coverage_start ≤ frm AND coverage_end ≥ to`. (A purchase-free month, or a range older than the scraper's ~1-year window, would mislead a `MAX(txn_date)` proxy — hence explicit windows.)
-- **Exclusion rule.** A bank line is excluded from **spend** iff `_is_card_payment` matches it for a card that is **both imported AND covered** for the requested period. Bills for un-imported cards (…6146) or any uncovered period are **not** excluded — they stay **counted** (bank-level) and the tool output carries the flag "(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)". Never under-reports, never double-counts.
-- **`financial_summary` category-aware:** iterate `store.transactions_between(frm,to)`; income = Σ positives, expense = Σ negatives, **minus** lines the exclusion rule catches. Balance unchanged.
+- **Reliable coverage via explicit metadata (P1a) — not `MAX(txn_date)`.** New `source_coverage` table; on each sync record per `(source, account)`: `coverage_start` (the start date **Python passed** to the collector, §1), `coverage_end` (sync time), `scraped_at`. A card is **covered for `[frm,to]`** iff `coverage_start ≤ frm AND coverage_end ≥ to`. (A purchase-free month, or a range older than the scraper's ~1-year window, would mislead a `MAX(txn_date)` proxy — hence explicit windows.)
+- **Exclusion rule — exactly one side ever counts (P1).** For each card, per requested period:
+  - **Covered** (imported + coverage window ⊇ range): drop the bank card-bill lines (`_is_card_payment`), keep the Max purchases.
+  - **Not covered** (un-imported card like …6146, or range outside the window): keep the bank card-bill lines **and drop that card's Max rows** (`source='max'`, that account) — so a partial/stale Max sync can never sit alongside the bill and double-count. The tool output carries the flag "(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)".
+  - Net: covered → Max side counts; uncovered → bank side counts. Never both, never neither.
+- **`financial_summary` category-aware:** iterate `store.transactions_between(frm,to)`; income = Σ positives, expense = Σ negatives, after applying the exclusion rule. **Excluded card-payment lines are dropped from BOTH income and expense** (a positive `זיכוי לכרטיס` credit must not inflate income), as are dropped-Max rows in the uncovered case. Balance unchanged.
 - **`spending_by_category`:** apply the same exclusion (covered card-payments dropped from the breakdown; uncovered → surface the bills + flag). Also **return an uncategorized TOTAL amount** (P2), not just count/examples, so summaries reconcile.
 - **`cash_flow_forecast` — bank-only, NOT spend (P2a):** cash-flow is bank-balance timing; the real future debit is the **card bill**. `_forecast_impl` runs `_detect_recurring` on **`source='discount'` only** — keeps the recurring card bills, excludes the Max purchases. (Opposite lens from spend; documented in Architecture.)
 - Reconciliation (period covered): `financial_summary` expense == Σ `spending_by_category` totals + uncategorized total, purchase-date basis; imported+covered card bills count zero.
@@ -75,10 +79,11 @@ No code change to `set_category_rule`/`_categorize` — they finally have mercha
 - **Forecast is bank-only (P2a):** recurring bank card-bill + recurring Max purchase → `cash_flow_forecast` uses the **bank bill** and **ignores** the Max purchase (counts the debit once, timed on the bill's payment date).
 - **Billing-cycle skew (P2c):** a bank card-bill dated month N paying Max purchases dated month N-1 → for **spend**, the bill is excluded regardless of date and the purchases count in **N-1**; for **forecast**, the bill is timed in **N**.
 - **Uncategorized total (P2):** `spending_by_category` returns a summable uncategorized **amount** (not only a count).
-- **Seed-rules idempotency:** running the seed twice doesn't duplicate the `card_payment` rules.
+- **Matcher is code, not data (P3):** assert `_is_card_payment` creates **no** `category_rules` rows (nothing to seed/duplicate) and survives repeated syncs unchanged.
+- **Symmetric uncovered exclusion (P1):** an uncovered range holding a bank card-bill **and** partial Max rows for that card → assert **only the bank bill** counts (Max rows dropped), so no double-count.
 - Full suite stays green.
 
 ## Deploy + live verify (`deploy-box`)
 1. rsync (incl. `collector/scrape_max.js`); `.env` already has Max creds on the box.
 2. Restart `home-agent`.
-3. Live: run `sync_finances` → confirm Max …1743 itemized txns land; ask Menashe for a category breakdown → confirm it uses real merchants, the bank card-bills are tagged `card_payment` (excluded), the total reconciles, and (Max being fresh) no partial/stale flag appears.
+3. Live: run `sync_finances` → confirm Max …1743 itemized txns land; ask Menashe for a category breakdown → confirm it uses real merchants, the bank card-bills are **excluded by the internal card-payment matcher**, the total reconciles, and (Max being fresh/covering the range) no partial/stale flag appears.
