@@ -300,22 +300,28 @@ _DEL_RULE_SCHEMA = {"type": "function", "function": {
 
 def _spending_impl(args, *, store, now_fn) -> str:
     frm, to = _resolve_range(args, now_fn)
+    rows, partial = _spendable_rows(store, frm, to)
     rules = store.active_rules()
-    totals, uncategorized, examples = {}, 0, []
-    for t in store.transactions_between(frm, to):
+    totals, uncategorized, uncategorized_agorot, examples = {}, 0, 0, []
+    for t in rows:
         if t["amount_agorot"] >= 0:
             continue  # expenses only
         cat = _categorize(t["description"], rules)
         if cat is None:
             uncategorized += 1
+            uncategorized_agorot += t["amount_agorot"]
             if t["description"] not in examples:
                 examples.append(t["description"])
         else:
             totals[cat] = totals.get(cat, 0) + t["amount_agorot"]
     lines = [f"{c}: {_shekels(v)}" for c, v in sorted(totals.items(), key=lambda kv: kv[1])]
     if uncategorized:
-        lines.append(f"ללא קטגוריה: {uncategorized} (למשל: {', '.join(examples[:3])})")
-    return "\n".join(lines) if lines else "אין הוצאות בטווח."
+        lines.append(f"ללא קטגוריה: {_shekels(uncategorized_agorot)} ({uncategorized} תנועות, "
+                     f"למשל: {', '.join(examples[:3])})")
+    out = "\n".join(lines) if lines else "אין הוצאות בטווח."
+    if partial:
+        out += "\n(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)"
+    return out
 
 
 def _set_rule_impl(args, *, store) -> str:
