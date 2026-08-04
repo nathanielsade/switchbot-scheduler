@@ -25,6 +25,9 @@ class FinanceStore:
                 " id INTEGER PRIMARY KEY AUTOINCREMENT, merchant_pattern TEXT NOT NULL,"
                 " category TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',"
                 " created_at TEXT DEFAULT CURRENT_TIMESTAMP);"
+                "CREATE TABLE IF NOT EXISTS source_coverage ("
+                " source TEXT, account TEXT, coverage_start TEXT, coverage_end TEXT,"
+                " scraped_at TEXT, PRIMARY KEY(source,account));"
             )
             conn.commit()
 
@@ -124,3 +127,33 @@ class FinanceStore:
                                " WHERE id=? AND status='active'", (rule_id,))
             conn.commit()
         return cur.rowcount > 0
+
+    def record_coverage(self, source, account, coverage_start, coverage_end, scraped_at):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO source_coverage (source, account, coverage_start, coverage_end, scraped_at)"
+                " VALUES (?,?,?,?,?)"
+                " ON CONFLICT(source, account) DO UPDATE SET"
+                " coverage_start=excluded.coverage_start, coverage_end=excluded.coverage_end,"
+                " scraped_at=excluded.scraped_at",
+                (source, account, coverage_start, coverage_end, scraped_at))
+            conn.commit()
+
+    def is_covered(self, source, account, from_date, to_date):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT coverage_start, coverage_end FROM source_coverage"
+                " WHERE source=? AND account=?",
+                (source, account)).fetchone()
+        if not row:
+            return False
+        coverage_start, coverage_end = row
+        return coverage_start <= from_date and coverage_end >= to_date
+
+    def covered_cards(self, source, from_date, to_date):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT account FROM source_coverage"
+                " WHERE source=? AND coverage_start<=? AND coverage_end>=?",
+                (source, from_date, to_date)).fetchall()
+        return {row[0] for row in rows}
