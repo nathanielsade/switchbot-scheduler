@@ -68,14 +68,29 @@ def test_surfaces_only_uncategorized_expense_merchants_sorted_by_spend():
     assert out.index("מסעדה מסתורית") < out.index("חנות סתומה")
 
 
-def test_default_window_is_wide_and_uncovered_card_bill_excluded_when_no_coverage_flagged():
-    # Sanity: without from/to, tool should not blow up and should use a wide default lookback.
+def test_default_lookback_window_boundary():
+    # Default (no from/to) = 12-month lookback from the frozen clock (2026-07-12) => back to 2025-07-12.
     store = _store()
     store.upsert_transactions([
-        _row("discount", "checking", -6789, "חנות סתומה", txn_date="2026-07-01"),
+        _row("discount", "checking", -1100, "בתוך החלון", txn_date="2025-08-15"),   # ~11mo ago -> included
+        _row("discount", "checking", -2200, "מחוץ לחלון", txn_date="2025-06-01"),    # ~13mo ago -> excluded
     ])
     out = _uncategorized(store)
-    assert "חנות סתומה" in out
+    assert "בתוך החלון" in out
+    assert "מחוץ לחלון" not in out
+
+
+def test_card_bill_lines_excluded_not_categorizable():
+    # An un-itemized card's bank card-bill lump is NOT a categorizable merchant -> excluded from the list,
+    # while a real merchant on the same account remains.
+    store = _store()
+    store.upsert_transactions([
+        _row("discount", "checking", -50000, "חיוב לכרטיס ויזה 6146", txn_date="2026-06-15"),
+        _row("discount", "checking", -6789, "חנות אמיתית", txn_date="2026-06-16"),
+    ])
+    out = _uncategorized(store, from_date="2026-06-01", to_date="2026-06-30")
+    assert "חנות אמיתית" in out
+    assert "6146" not in out and "ויזה" not in out
 
 
 def test_merchant_disappears_after_rule_added():

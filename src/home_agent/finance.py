@@ -380,6 +380,8 @@ def _uncategorized_merchants_impl(args, *, store, now_fn) -> str:
     for t in rows:
         if t["amount_agorot"] >= 0:
             continue  # expenses only
+        if _CARD_BILL_RE.search(_norm_desc(t["description"])):
+            continue  # card-bill lump lines aren't categorizable merchants (e.g. an un-itemized card)
         if _categorize(t["description"], rules) is not None:
             continue  # already categorized
         key = _norm_desc(t["description"])
