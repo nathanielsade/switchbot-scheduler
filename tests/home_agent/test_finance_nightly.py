@@ -104,7 +104,9 @@ def test_nightly_finance_job_registered_and_invokes_run_finance_sync(tmp_path, m
     import home_agent.telegram_app as ta
     from home_agent.memory import Conversation
 
-    cfg = _finance_config(tmp_path, discount_id="1", discount_password="p", discount_num="9")
+    # non-default hour so the assertion below is load-bearing (would catch a hardcoded dtime(5, ...))
+    cfg = _finance_config(tmp_path, discount_id="1", discount_password="p", discount_num="9",
+                          finance_sync_hour=7)
     monkeypatch.setattr(ta, "make_collector_fetch",
                         lambda cfg, source="discount": (lambda: contract()))
 
@@ -123,7 +125,7 @@ def test_nightly_finance_job_registered_and_invokes_run_finance_sync(tmp_path, m
     assert len(jobs) == 1
     job = jobs[0]
     hour_field = next(f for f in job.job.trigger.fields if f.name == "hour")
-    assert str(hour_field) == str(cfg.finance_sync_hour)
+    assert str(hour_field) == str(cfg.finance_sync_hour) == "7"
 
     import asyncio
     asyncio.run(job.callback(None))
