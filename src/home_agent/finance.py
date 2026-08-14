@@ -296,6 +296,23 @@ _SPENDING_SCHEMA = {"type": "function", "function": {
         "from_date": {"type": "string"}, "to_date": {"type": "string"},
         "period": {"type": "string", "enum": list(_PERIODS)}}, "additionalProperties": False}}}
 
+_UNCATEGORIZED_MERCHANTS_LIMIT = 40
+_UNCATEGORIZED_MERCHANTS_LOOKBACK_DAYS = 365
+
+_UNCATEGORIZED_MERCHANTS_SCHEMA = {"type": "function", "function": {
+    "name": "list_uncategorized_merchants",
+    "description": (
+        "List the distinct uncategorized expense merchants (with total spent and transaction count, "
+        "sorted by spend), so you can bulk-create category rules with set_category_rule. Defaults to a "
+        "wide lookback window; pass explicit from_date/to_date or a period shortcut to narrow it. "
+        "Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "from_date": {"type": "string", "description": "YYYY-MM-DD"},
+        "to_date": {"type": "string", "description": "YYYY-MM-DD"},
+        "period": {"type": "string", "enum": list(_PERIODS)},
+    }, "additionalProperties": False}}}
+
 _SET_RULE_SCHEMA = {"type": "function", "function": {
     "name": "set_category_rule",
     "description": (
@@ -343,6 +360,39 @@ def _spending_impl(args, *, store, now_fn) -> str:
     if partial:
         out += "\n" + _PARTIAL_FLAG
     return out
+
+
+def _uncategorized_merchants_range(args, now_fn):
+    frm, to = args.get("from_date"), args.get("to_date")
+    if frm and to:
+        return frm, to
+    if args.get("period"):
+        return _period_range(args["period"], now_fn())
+    now = now_fn()
+    return (now.date() - timedelta(days=_UNCATEGORIZED_MERCHANTS_LOOKBACK_DAYS)).isoformat(), now.date().isoformat()
+
+
+def _uncategorized_merchants_impl(args, *, store, now_fn) -> str:
+    frm, to = _uncategorized_merchants_range(args, now_fn)
+    rows, _partial = _spendable_rows(store, frm, to)
+    rules = store.active_rules()
+    merchants = {}  # norm_desc -> {"display": str, "total": int, "count": int}
+    for t in rows:
+        if t["amount_agorot"] >= 0:
+            continue  # expenses only
+        if _categorize(t["description"], rules) is not None:
+            continue  # already categorized
+        key = _norm_desc(t["description"])
+        m = merchants.get(key)
+        if m is None:
+            merchants[key] = {"display": t["description"], "total": t["amount_agorot"], "count": 1}
+        else:
+            m["total"] += t["amount_agorot"]
+            m["count"] += 1
+    if not merchants:
+        return "אין סוחרים ללא קטגוריה בטווח."
+    ordered = sorted(merchants.values(), key=lambda m: m["total"])[:_UNCATEGORIZED_MERCHANTS_LIMIT]
+    return "\n".join(f"{m['display']}: {_shekels(m['total'])} ({m['count']} תנועות)" for m in ordered)
 
 
 def _set_rule_impl(args, *, store) -> str:
@@ -436,6 +486,8 @@ def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
              impl=lambda a: _find_impl(a, store=store)),
         Tool(name="spending_by_category", schema=_SPENDING_SCHEMA,
              impl=lambda a: _spending_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="list_uncategorized_merchants", schema=_UNCATEGORIZED_MERCHANTS_SCHEMA,
+             impl=lambda a: _uncategorized_merchants_impl(a, store=store, now_fn=now_fn)),
         Tool(name="set_category_rule", schema=_SET_RULE_SCHEMA,
              impl=lambda a: _set_rule_impl(a, store=store)),
         Tool(name="list_category_rules", schema=_LIST_RULES_SCHEMA,
