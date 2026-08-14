@@ -8,7 +8,7 @@ from .agent import run_turn
 from .calendar_pending import CalendarPending
 from .config import max_configured
 from .facts import FactStore, build_memory_tools
-from .finance import build_finance_tools, finance_configured, make_collector_fetch
+from .finance import build_finance_tools, finance_configured, make_collector_fetch, run_finance_sync
 from .finance_store import FinanceStore
 from .gcal import build_calendar_tools, load_calendar_service
 from .home import build_home_tools, load_registry
@@ -131,10 +131,26 @@ def build_application(config, *, client=None, conversation=None):
     if rr_client is not None:
         tools += build_roborock_tools(rr_client, load_room_registry(config))
     if finance_configured(config):
+        from datetime import time as dtime
+        from zoneinfo import ZoneInfo
         fetch_fns = {"discount": make_collector_fetch(config, "discount")}
         if max_configured(config):
             fetch_fns["max"] = make_collector_fetch(config, "max")
-        tools += build_finance_tools(FinanceStore(config.db_path), fetch_fns=fetch_fns)
+        finance_store = FinanceStore(config.db_path)
+        tools += build_finance_tools(finance_store, fetch_fns=fetch_fns)
+        if app.job_queue is not None:
+            async def _nightly_finance_sync(context=None):
+                # Never crash the bot: run_finance_sync already per-source try/excepts; this is
+                # a last-resort net for anything that escapes it (e.g. a lock/IO error).
+                try:
+                    result = run_finance_sync(store=finance_store, fetch_fns=fetch_fns)
+                    log.info("nightly finance sync: %s", result)
+                except Exception as e:
+                    log.warning("nightly finance sync failed: %s", e)
+            app.job_queue.run_daily(
+                _nightly_finance_sync,
+                time=dtime(config.finance_sync_hour, 0, tzinfo=ZoneInfo(config.home_tz)),
+                name="finance-sync")
     fact_store = FactStore(config.db_path)
     if scheduler is not None:
         scheduler.reconcile()   # arm existing cloud schedules on startup
