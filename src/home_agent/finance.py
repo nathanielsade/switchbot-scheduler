@@ -18,6 +18,11 @@ _CARD_BILL_RE = re.compile(r"(חיוב|זיכוי)\s+לכרטיס\s+ויזה\s+(
 # Appended by spend tools when a card's itemized data isn't available for the range and we fall
 # back to the bank-level card-bill figures (Option A, spec §4). Shared by summary + by-category.
 _PARTIAL_FLAG = "(פירוט הכרטיס אינו זמין לתקופה זו — מציג סכומים ברמת הבנק)"
+# Safety net for when the nightly sync FAILS one or more nights (collector auth expired, network
+# blip): coverage_end freezes in the past; grace prevents an immediate hard fallback to bank-level
+# for a range that's only a few days stale. NOT meant to close a normal day-to-day gap — after a
+# successful nightly sync, coverage_end == today, so a same-day query is fully covered (gap = 0).
+_COVERAGE_GRACE_DAYS = 3
 
 
 def finance_configured(config) -> bool:
@@ -178,13 +183,15 @@ _FIND_SCHEMA = {"type": "function", "function": {
     }, "additionalProperties": False}}}
 
 
-def _sync_impl(args, *, store, fetch_fns, now_fn) -> str:
+def run_finance_sync(*, store, fetch_fns, now_fn=None) -> str:
+    """Plain sync callable shared by the `sync_finances` tool and the nightly job (Part 1).
+    Takes the file lock once around the whole multi-source sync (spec §3): a second concurrent
+    sync is refused wholesale rather than interleaving between sources. The lock lives next to
+    the DB; per-source fetchers no longer lock individually."""
     import fcntl
     import os
 
-    # File-lock ONCE around the whole multi-source sync (spec §3): a second concurrent
-    # sync_finances is refused wholesale rather than interleaving between sources. The lock
-    # lives next to the DB; per-source fetchers no longer lock individually.
+    now_fn = now_fn or _now
     lock_path = os.path.join(os.path.dirname(store.db_path) or ".", ".finance_sync.lock")
     with open(lock_path, "w") as lf:
         try:
@@ -192,6 +199,10 @@ def _sync_impl(args, *, store, fetch_fns, now_fn) -> str:
         except BlockingIOError:
             return "סנכרון פיננסי כבר רץ כרגע. נסו שוב עוד רגע."
         return _sync_locked(store=store, fetch_fns=fetch_fns, now_fn=now_fn)
+
+
+def _sync_impl(args, *, store, fetch_fns, now_fn) -> str:
+    return run_finance_sync(store=store, fetch_fns=fetch_fns, now_fn=now_fn)
 
 
 def _sync_locked(*, store, fetch_fns, now_fn) -> str:
@@ -232,7 +243,7 @@ def _spendable_rows(store, frm, to):
     Returns (kept_rows, partial_flag) — partial_flag is True iff a bank-level fallback (an
     uncovered card's bill) was kept, meaning the itemized detail isn't available for this period.
     """
-    covered = {_card4(c) for c in store.covered_cards("max", frm, to)}
+    covered = {_card4(c) for c in store.covered_cards("max", frm, to, grace_days=_COVERAGE_GRACE_DAYS)}
     kept = []
     partial_flag = False
     for row in store.transactions_between(frm, to):
@@ -459,12 +470,12 @@ def make_collector_fetch(config, source="discount"):
     start_date_str = (_now() - timedelta(days=config.finance_start_days)).date().isoformat()
 
     def _fetch():
-        # Concurrency is guarded once around the whole sync in _sync_impl (spec §3); no lock here.
+        # Concurrency is guarded once around the whole sync in run_finance_sync (spec §3); no lock here.
         env = {**os.environ, "FINANCE_START_DATE": start_date_str, **creds}
         proc = subprocess.run([config.finance_node_bin, script], capture_output=True,
                               text=True, env=env, timeout=180, shell=False)
         if proc.returncode != 0 or not proc.stdout.strip():
             raise RuntimeError(f"collector failed (rc={proc.returncode})")  # stderr NOT surfaced
         return json.loads(proc.stdout, parse_float=Decimal)
-    _fetch.coverage_start = start_date_str  # so _sync_impl records the SAME window the collector used
+    _fetch.coverage_start = start_date_str  # so run_finance_sync records the SAME window the collector used
     return _fetch

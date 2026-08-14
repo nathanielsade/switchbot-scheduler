@@ -150,10 +150,14 @@ class FinanceStore:
         coverage_start, coverage_end = row
         return coverage_start <= from_date and coverage_end >= to_date
 
-    def covered_cards(self, source, from_date, to_date):
+    def covered_cards(self, source, from_date, to_date, grace_days=0):
+        """A card/account is covered iff its coverage fully contains from_date and its
+        coverage_end reaches to_date minus `grace_days` (a safety net for a stale-but-recent
+        sync; see finance._COVERAGE_GRACE_DAYS). Default grace_days=0 keeps existing callers'
+        strict full-containment behavior unchanged."""
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
                 "SELECT account FROM source_coverage"
-                " WHERE source=? AND coverage_start<=? AND coverage_end>=?",
-                (source, from_date, to_date)).fetchall()
+                " WHERE source=? AND coverage_start<=? AND coverage_end>=date(?,?)",
+                (source, from_date, to_date, f"-{int(grace_days)} days")).fetchall()
         return {row[0] for row in rows}
