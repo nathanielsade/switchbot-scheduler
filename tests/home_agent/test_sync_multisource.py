@@ -62,7 +62,7 @@ def test_sync_lock_wraps_whole_loop_and_refuses_concurrent_run():
     fetch_fns = {"discount": counting_fetch, "max": counting_fetch}
     tools = build_finance_tools(store, now_fn=_frozen, fetch_fns=fetch_fns)
 
-    # Hold the same lock _sync_impl uses (next to the DB), simulating a concurrent sync.
+    # Hold the same lock run_finance_sync uses (next to the DB), simulating a concurrent sync.
     lock_path = os.path.join(os.path.dirname(store.db_path), ".finance_sync.lock")
     with open(lock_path, "w") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
