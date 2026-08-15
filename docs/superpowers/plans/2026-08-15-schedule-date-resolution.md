@@ -1193,8 +1193,9 @@ contains the tool-result messages fed back. There is no dedicated accessor — u
 Add these four too — each is a spec requirement with no other coverage:
 
 ```python
-def test_all_four_devices_in_one_turn(tmp_path):
-    """The real request was four devices at once; a partial failure must not half-apply."""
+def test_several_devices_in_one_turn(tmp_path):
+    """The real request was four devices at once (this registry has three); a partial
+    failure must not half-apply."""
     writes = []
     tools, store = _tools(tmp_path, writes, now=_fri_1721)
     for dev in ["סלון", "פינת אוכל", "מזגן"]:
@@ -1273,14 +1274,28 @@ currently has no logging at all. And `src/home_agent/CLAUDE.md` is the repo's mo
 
 - [ ] **Step 1: Add the log line**
 
-In `src/home_agent/agent.py`, where a tool call is dispatched, add:
+In `src/home_agent/agent.py`, the dispatch loop is:
 
 ```python
-log.info("tool %s -> %s", name, result[:120].replace("\n", " | "))
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+                tool = tool_by_name.get(tc.function.name)
+                result = tool.impl(args) if tool else f"error: unknown tool {tc.function.name}"
+            except Exception as e:
+                result = f"error: {e}"
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
 ```
 
-with `import logging` / `log = logging.getLogger("home_agent")` at module top, matching the
-pattern in `schedules.py` and `cloud_scheduler.py`.
+Add the log line after the `except` block, immediately before `messages.append`:
+
+```python
+            log.info("tool %s -> %s", tc.function.name, str(result)[:120].replace("\n", " | "))
+```
+
+Note `tc.function.name` — there is **no** `name` local in this function; the loop uses
+`tc.function.name` inline. Add `import logging` / `log = logging.getLogger("home_agent")` at module
+top, matching the pattern in `schedules.py` and `cloud_scheduler.py`.
 
 - [ ] **Step 2: Update the module map**
 
