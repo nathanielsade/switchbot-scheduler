@@ -106,7 +106,12 @@ Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_sched
 Expected: PASS.
 
 Then run the full suite: `/Users/netanelsade/smart-home/.venv/bin/pytest -q --ignore=integration_tests`
-Expected: failures in `test_schedule_tools.py` (the `get_schedule` expiry test) and possibly `test_cloud_scheduler.py`, because callers still pass local-tz `now`. That is expected and fixed in Task 2/3 — do not "fix" them by reverting this task.
+Expected: exactly ONE failure — `test_schedule_store.py::test_remove_id_and_expired`, whose
+`assert s.remove_expired(...) == 1` is now a list. Fix it in this task by changing that line to
+`assert len(s.remove_expired("2026-07-09T12:00:00+00:00")) == 1` and moving its two `fire_at`
+fixtures at `:37-38` to the `+00:00` form. Nothing else goes red: `test_schedule_tools.py:145`
+already passes a UTC-aware clock, and `test_cloud_scheduler.py` is self-consistent at `+03:00`
+until Task 2.
 
 - [ ] **Step 5: Commit**
 
@@ -121,8 +126,8 @@ git commit -m "fix(schedules): remove_expired returns rows and compares UTC inst
 
 **Files:**
 - Modify: `src/home_agent/tools.py:13-30`
-- Modify: `src/home_agent/schedules.py:193-195` (`_now`), and the two `remove_expired` call sites
-- Modify: `src/home_agent/telegram_app.py:111` (hoist `ZoneInfo`), `:123` (use the factory), `:127` (pass `now_fn`)
+- Modify: `src/home_agent/schedules.py` — `_now()` (`:193-195`) and the two `remove_expired` call sites
+- Modify: `src/home_agent/telegram_app.py` — module-top imports, `:123` (use the factory), `:127` (pass `now_fn`)
 - Test: `tests/home_agent/test_time_tool.py`, `tests/home_agent/test_schedule_tools.py`
 
 **Interfaces:**
@@ -194,6 +199,18 @@ def _utc_iso(dt):
     return dt.astimezone(timezone.utc).isoformat()
 ```
 
+Also change the module default `_now()` (`schedules.py:193-195`) from `datetime.now().astimezone()`
+to a real zone, so a caller that omits `now_fn` still gets DST-safe resolution:
+
+```python
+def _now():
+    # ZoneInfo, not .astimezone(): the latter yields a FIXED-OFFSET tzinfo, which is exactly
+    # what _resolve_fire_at must not build dates from. Production injects now_fn from config.
+    return datetime.now(ZoneInfo("Asia/Jerusalem"))
+```
+
+with `from zoneinfo import ZoneInfo` at the top of `schedules.py`.
+
 Change `schedules.py:155` from `store.remove_expired(now_fn().isoformat())` to:
 
 ```python
@@ -208,7 +225,16 @@ In `src/home_agent/cloud_scheduler.py:21`, change `self.store.remove_expired(sel
 
 adding `from datetime import timezone as _dt_timezone` to that module's imports.
 
-In `src/home_agent/telegram_app.py`, hoist the `ZoneInfo` import to the top of the module (it is currently inside the cloud-creds `if` block at line 111, but is now needed unconditionally), then change line 123 and 127:
+In `src/home_agent/telegram_app.py`: **delete BOTH function-scoped `from zoneinfo import ZoneInfo`
+lines — `:111` (cloud-creds block) and `:135` (finance block)** — and add `from datetime import datetime`
+plus `from zoneinfo import ZoneInfo` at module top.
+
+This is not optional tidying. A function-scoped `import` binds the name local to the **entire**
+function body, so using `ZoneInfo` at line 123 while an `import zoneinfo` still sits at line 135
+raises `UnboundLocalError` before line 135 ever runs — taking out `build_application` and the live
+bot. Leave `from datetime import time as dtime` at `:134` alone.
+
+Then change lines 123 and 127:
 
 ```python
     tools = list(build_time_tools(ZoneInfo(config.home_tz)))
@@ -256,17 +282,21 @@ git commit -m "fix(schedules): pin scheduler and model clocks to HOME_TZ, compar
 ```python
 def test_schedule_row_raises_for_past_one_time(tmp_path):
     import pytest
-    sched, store, _ = _make_scheduler()          # match the file's existing helper
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)   # note: (store, cs) — store first
     row = {"id": 1, "device": "garden", "action": "on", "time": "09:00",
            "days": ["thu"], "once": True, "fire_at": "2026-07-16T06:00:00+00:00"}
     with pytest.raises(ValueError):
-        sched.schedule_row(row)                   # now_fn is after that instant
+        cs.schedule_row(row)                       # NOW is 12:00 Jerusalem = 09:00Z
 
 
 def test_reconcile_skips_past_rows_without_raising(tmp_path):
-    sched, store, _ = _make_scheduler()
-    store.add("garden", "on", "09:00", ["thu"], True, "2026-07-16T06:00:00+00:00")
-    sched.reconcile()                             # must not raise
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    # fire_at EXACTLY equal to now: remove_expired's strict "<" keeps the row, so it really
+    # reaches schedule_row, whose "<=" raises. A row merely in the past would be deleted by
+    # the sweep first, and this test would then pass even without the code change.
+    store.add("garden", "on", "12:00", ["thu"], True, "2026-07-16T09:00:00+00:00")
+    cs.reconcile()                                 # must not raise
+    assert jq.jobs == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -340,9 +370,10 @@ def test_fired_one_time_row_is_not_rearmed_by_a_later_write(tmp_path):
     tools, store = _tools(tmp_path, writes)
     # a one-time row that has already fired (before the frozen clock _thu_1824)
     store.add("dining", "on", "08:00", ["thu"], True, "2026-07-09T05:00:00+00:00")
-    _tool(tools, "schedule_recurring_device").impl(
-        {"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"],
-         "repetition_phrase": "כל שני"})
+    # Task-4-era API: schedule_recurring_device does not exist until Task 7. This test
+    # is migrated to it there, along with the rest of the days= callers.
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"]})
     assert [r["time"] for r in store.list("dining")] == ["23:00"]
     # only the new alarm was written to the Bot, not the stale 08:00 one
     assert len(writes[-1][1]) == 1
@@ -350,7 +381,7 @@ def test_fired_one_time_row_is_not_rearmed_by_a_later_write(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k rearmed`
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k "rearmed"`
 Expected: FAIL — two alarms are written, and the stale row is still in the store.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -411,11 +442,15 @@ Why: `validate()` runs only inside `_program_device`, i.e. BLE only, so cloud de
 
 ```python
 def test_cloud_device_respects_the_five_timer_cap(tmp_path):
-    tools, store, _ = _cloud_tools()             # match the file's existing helper
+    # This file builds a dict of tools inline; it has no _tool() helper (that lives in
+    # test_schedule_tools.py). "גינה" is an alias in this file's _reg fixture.
+    store = ScheduleStore(str(tmp_path / "s.db")); sch = FakeScheduler()
+    tools = {t.name: t for t in build_schedule_tools(
+        _reg(tmp_path), store, write_fn=lambda *a: None, now_fn=_now, scheduler=sch)}
     for i in range(5):
-        _tool(tools, "schedule_device").impl(
+        tools["schedule_device"].impl(
             {"device": "גינה", "action": "on", "time": f"0{i+1}:00", "days": ["mon"]})
-    out = _tool(tools, "schedule_device").impl(
+    out = tools["schedule_device"].impl(
         {"device": "גינה", "action": "on", "time": "07:00", "days": ["mon"]})
     assert "max" in out.lower() or "5" in out
     assert len(store.list("garden")) == 5
@@ -423,12 +458,15 @@ def test_cloud_device_respects_the_five_timer_cap(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedules_cloud.py -q -k cap`
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedules_cloud.py -q -k "cap"`
 Expected: FAIL — a 6th row is stored, since `validate` never runs for cloud devices.
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `_schedule_impl`, after resolving `name` and before `store.add(...)`:
+In `_schedule_impl`, **immediately after the `_expire_and_reprogram(...)` call** added in Task 4,
+and before `store.add(...)`. The order matters: placed above the sweep, stale fired rows would
+count toward the cap and a legitimate 5th timer would be rejected — a silent wrong behaviour
+rather than a visible failure.
 
 ```python
     from switchbot_scheduler.validator import MAX_ALARMS
@@ -520,10 +558,16 @@ def test_unknown_token_raises():
 def test_resolution_survives_the_dst_boundary():
     # Israel ends DST overnight 2026-10-24/25. "tomorrow 18:30" must be 18:30 WALL CLOCK
     # on the 25th, not 17:30 — which is what fixed-offset arithmetic would produce.
+    from datetime import timedelta
     before = datetime(2026, 10, 24, 12, 0, tzinfo=_TZ)
     got = _resolve_fire_at("tomorrow", "18:30", before)
     assert got.date().isoformat() == "2026-10-25"
     assert (got.hour, got.minute) == (18, 30)
+    # Assert the INSTANT, not just the wall clock: the wall-clock assertion above holds for
+    # any plausible implementation (ZoneInfo recomputes the offset even for timedelta
+    # arithmetic), so only the offset actually distinguishes correct from wrong here.
+    assert got.utcoffset() == timedelta(hours=2)      # DST has ended by the 25th
+    assert before.utcoffset() == timedelta(hours=3)   # it had not on the 24th
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -584,9 +628,26 @@ def _resolve_fire_at(when, time_str, now):
 
 Keep the `_PY_WEEKDAY` map — Task 7 uses it to name the resolved date's weekday for the row contract.
 
+**Also rewrite the one-time branch of the existing `_schedule_impl` in this same step**, or the
+suite goes red: `_schedule_impl` still calls the deleted `_one_time_target`, raising `NameError` in
+about eight tests, and Step 5 would commit that.
+
+```python
+        else:
+            target = _resolve_fire_at("soonest", time_str, now_fn())
+            days, once, fire_at = [_PY_WEEKDAY[target.weekday()]], True, _utc_iso(target)
+```
+
+`soonest` is byte-for-byte the old "today if ahead, else tomorrow" semantic, so the existing
+one-time tests (`test_schedule_tools.py:61, 83, 113`) stay green. The model-facing schema does not
+change until Task 7.
+
+Finally, update the import at `test_schedule_tools.py:2` to drop `_one_time_target` — deleting the
+two tests alone leaves an `ImportError` that fails the whole module.
+
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k resolve or tomorrow or soonest or weekday or dst`
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k "resolve or tomorrow or soonest or weekday or dst"`
 Expected: PASS for the new tests. The old `_one_time_target` tests (`test_schedule_tools.py:2, 24, 30`) now fail on import — delete them in this step; they test a helper that no longer exists.
 
 - [ ] **Step 5: Commit**
@@ -643,16 +704,17 @@ def test_recurring_row_contract_and_required_phrase(tmp_path):
     row = store.list("dining")[0]
     assert row["once"] is False and row["fire_at"] is None
 
-    store2_out = _tool(tools, "schedule_recurring_device").impl(
-        {"device": "מטבח", "action": "on", "time": "18:30", "days": ["fri"],
+    # _registry() has only living_room/ac/dining — no kitchen, no garden.
+    empty_phrase = _tool(tools, "schedule_recurring_device").impl(
+        {"device": "סלון", "action": "on", "time": "18:30", "days": ["fri"],
          "repetition_phrase": "  "})
-    assert "repetition" in store2_out.lower() or "schedule_device" in store2_out
-    assert store.list("kitchen") == []
+    assert "schedule_device" in empty_phrase
+    assert store.list("living_room") == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k contract or no_days`
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k "contract or no_days"`
 Expected: FAIL — `KeyError: 'schedule_recurring_device'`, and `days` is still a property.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -771,13 +833,30 @@ Bind both tools in `build_schedule_tools`:
                  write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
 ```
 
-`_describe_row` is written in Task 8 — for this task, stub it as
-`f"{action} at {time_str}"` and replace it there.
+**Write the real `_describe_row` now** (its full body is in Task 8, Step 3 — copy it from there).
+A stub returning only `f"{action} at {time_str}"` would contradict this task's own test, which
+asserts `"RECURRING" in out`. Task 8 then adds only `_get_schedule_impl` and its tests.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py tests/home_agent/test_schedules_cloud.py -q`
-Expected: the new tests PASS. The ten existing tests that pass `days` to `schedule_device` now fail — migrate them in this step to `schedule_recurring_device` (adding `repetition_phrase`), namely `test_schedule_tools.py:78, 96-97, 106-107, 135, 161, 172-173, 196, 207` and `test_schedules_cloud.py:29, 36, 43`. Tests that assert one-time behaviour instead gain `"when": "soonest"`.
+Expected: the new tests PASS, and every existing caller of the old schema fails. Migrate all of
+them in this step — the full list, so nothing is discovered mid-execution:
+
+**To `schedule_recurring_device`** (add `"repetition_phrase": "כל שני"` or similar):
+`test_schedule_tools.py:78, 96-97, 106-107, 135, 161, 172-173, 196, 207`;
+`test_schedules_cloud.py:29, 36, 43`; plus the two tests this plan added in Task 4
+(`test_fired_one_time_row_is_not_rearmed_by_a_later_write`) and Task 5
+(`test_cloud_device_respects_the_five_timer_cap`).
+
+**To `"when": "soonest"`** (they call `schedule_device` with no `days` and now need the required
+field): `test_schedule_tools.py:64, 86, 88, 120`.
+
+**`test_telegram_handler.py:115-134`** scripts the model calling `schedule_device` with
+`{"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]}` and asserts a BLE write
+happened. After this task the missing `when` returns an error string and no write occurs, so the
+test goes red with no obvious cause. Change those arguments to
+`{"device": "פינת אוכל", "action": "on", "time": "18:00", "when": "soonest"}`.
 
 - [ ] **Step 5: Commit**
 
@@ -823,7 +902,7 @@ def test_get_schedule_lists_dates_and_marks_recurring(tmp_path):
     _tool(tools, "schedule_device").impl(
         {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
     _tool(tools, "schedule_recurring_device").impl(
-        {"device": "מטבח", "action": "on", "time": "07:00", "days": ["mon"],
+        {"device": "סלון", "action": "on", "time": "07:00", "days": ["mon"],
          "repetition_phrase": "כל יום שני"})
     out = _tool(tools, "get_schedule").impl({})
     assert "2026-08-15" in out and "ONE-TIME" in out
@@ -832,7 +911,7 @@ def test_get_schedule_lists_dates_and_marks_recurring(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k date or week or lists`
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k "date or week or lists"`
 Expected: FAIL — the stub `_describe_row` prints no date.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -921,7 +1000,7 @@ def test_cancel_with_a_date_leaves_recurring_rows_alone(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k cancel`
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/test_schedule_tools.py -q -k "cancel"`
 Expected: FAIL — both timers are deleted, since matching is device+time only.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1060,6 +1139,14 @@ git commit -m "feat(prompts): one-time by default, always state the date, never 
 
 These are the tests that would have caught the original incident end-to-end.
 
+These go in `tests/home_agent/test_schedule_tools.py` and need two imports added at the top of
+that file:
+
+```python
+from home_agent.agent import run_turn
+from home_agent.prompts import FAMILY_SYSTEM_PROMPT
+```
+
 - [ ] **Step 1: Write the tests**
 
 ```python
@@ -1103,9 +1190,56 @@ The fake client records each `chat.completions.create(**kwargs)` call in `client
 `client._calls[0]["tools"]` is the schema list the model saw and `client._calls[-1]["messages"]`
 contains the tool-result messages fed back. There is no dedicated accessor — use `client._calls`.
 
+Add these four too — each is a spec requirement with no other coverage:
+
+```python
+def test_all_four_devices_in_one_turn(tmp_path):
+    """The real request was four devices at once; a partial failure must not half-apply."""
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    for dev in ["סלון", "פינת אוכל", "מזגן"]:
+        out = _tool(tools, "schedule_device").impl(
+            {"device": dev, "action": "on", "time": "18:30", "when": "tomorrow"})
+        assert "✅" in out and "2026-08-15" in out
+    assert all(r["fire_at"].startswith("2026-08-15") for r in store.list())
+
+
+def test_tomorrow_is_stable_across_midnight(tmp_path):
+    from datetime import datetime
+    late = lambda: datetime(2026, 8, 14, 23, 0, tzinfo=_TZ)
+    early = lambda: datetime(2026, 8, 15, 1, 0, tzinfo=_TZ)
+    assert _resolve_fire_at("tomorrow", "18:30", late()).date().isoformat() == "2026-08-15"
+    assert _resolve_fire_at("tomorrow", "18:30", early()).date().isoformat() == "2026-08-16"
+
+
+def test_missing_when_errors_and_stores_nothing(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30"})
+    assert "when" in out.lower()
+    assert store.list() == []
+
+
+def test_tool_error_is_fed_back_to_the_model(tmp_path, make_fake_client):
+    """A rejected call must come back as a tool message the model can recover from."""
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "schedule_device",
+                         "arguments": {"device": "פינת אוכל", "action": "on",
+                                       "time": "18:30", "when": "friday"}}]},
+        {"content": "לא הצלחתי, אנסה שוב"},
+    ])
+    writes = []
+    tools, _store = _tools(tmp_path, writes, now=_fri_1721)
+    run_turn("תזמן משהו", [], client=client, model="gpt-4o",
+             system=FAMILY_SYSTEM_PROMPT, tools=tools)
+    tool_msg = [m for m in client._calls[-1]["messages"] if m.get("role") == "tool"][0]
+    assert "unknown when" in tool_msg["content"]      # strict enum: "friday" is rejected
+```
+
 - [ ] **Step 2: Run them**
 
-Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/ -q -k model`
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest tests/home_agent/ -q -k "model"`
 Expected: PASS.
 
 - [ ] **Step 3: Run the whole suite**
@@ -1119,6 +1253,54 @@ Expected: PASS.
 git add tests/home_agent/
 git commit -m "test(schedules): model-facing regression tests for the tomorrow incident"
 ```
+
+---
+
+### Task 11b: Per-turn tool logging and the module map
+
+**Files:**
+- Modify: `src/home_agent/agent.py` (log which tools ran)
+- Modify: `src/home_agent/CLAUDE.md` (the schedule-tool trio becomes four)
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: an INFO log line per tool call.
+
+Why: the spec's compensating control for prompt-only rule 3 is that a fabricated "I scheduled it"
+must be detectable in `journalctl` rather than only when a light fails to come on. `agent.py`
+currently has no logging at all. And `src/home_agent/CLAUDE.md` is the repo's module map; it lists
+`schedule_device / get_schedule / cancel_schedule`, which is now wrong.
+
+- [ ] **Step 1: Add the log line**
+
+In `src/home_agent/agent.py`, where a tool call is dispatched, add:
+
+```python
+log.info("tool %s -> %s", name, result[:120].replace("\n", " | "))
+```
+
+with `import logging` / `log = logging.getLogger("home_agent")` at module top, matching the
+pattern in `schedules.py` and `cloud_scheduler.py`.
+
+- [ ] **Step 2: Update the module map**
+
+In `src/home_agent/CLAUDE.md`, change the `schedules.py` row to list four tools —
+`schedule_device` (one-time, `when`), `schedule_recurring_device` (weekly, rare),
+`get_schedule`, `cancel_schedule` — and note that `fire_at` is stored UTC.
+
+- [ ] **Step 3: Run the suite**
+
+Run: `/Users/netanelsade/smart-home/.venv/bin/pytest -q --ignore=integration_tests`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/home_agent/agent.py src/home_agent/CLAUDE.md
+git commit -m "feat(agent): log which tools ran; update the module map"
+```
+
+---
 
 **PHASE 2 GATE:** full suite green, the reported bug covered by a test. Review before continuing.
 
@@ -1167,9 +1349,13 @@ The new UTC `fire_at` format must not mix with old local-tz rows:
 ```bash
 ssh -i ~/.ssh/smarthome_box nathaniel@100.111.96.97 \
   "cd ~/smart-home && PYTHONPATH=src ./.venv/bin/python -c \"
+from home_agent.config import load_config
 from home_agent.schedule_store import ScheduleStore
-print(ScheduleStore('/home/nathaniel/smart-home/home_agent.db').list())\""
+print(ScheduleStore(load_config().db_path).list())\""
 ```
+
+(Reads `db_path` from config rather than hard-coding the path, since `HOME_AGENT_DB` is
+configurable.)
 
 Expected: `[]`. If not empty, normalize the surviving `fire_at` values to UTC before starting the new code.
 
