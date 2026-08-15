@@ -1,6 +1,7 @@
 # Schedule date resolution — design
 
-**Date:** 2026-08-15 · **Branch:** `fix/schedule-dates` · **Status:** revised after review (v2)
+**Date:** 2026-08-15 · **Branch:** `fix/schedule-dates` · **Status:** v4, ready for planning
+(three adversarial review rounds)
 
 ## Problem
 
@@ -105,7 +106,20 @@ words that mean repetition ("כל יום", "כל שישי", "every week"). The i
 whitespace-only value. A model that has to quote non-existent words is far likelier to fall back
 to the one-time tool than one that merely reads a discouraging description.
 
-Exact descriptions (the model-facing surface, which CLAUDE.md says *is* the instruction):
+This is deliberately a **nudge, not enforcement** — a model can invent a phrase at no cost. It
+cannot be strengthened into verification: `Tool.impl(args: dict) -> str` has no access to the
+user's message, so substring-matching against what was actually said is not implementable without
+plumbing user text into every tool. **The plan must not attempt that.** The value is that the
+failure mode is biased safely: a model unsure whether repetition was asked for falls back to the
+one-time tool.
+
+Description clauses (the model-facing surface, which CLAUDE.md says *is* the instruction). These
+are the **added or changed** clauses — the existing `schedule_device` text
+(`schedules.py:45-52`) is otherwise preserved verbatim, including the BLE-vs-cloud "fires even if
+this computer is off" caveat, `time` being 24-hour "HH:MM", the five-timer cap, and the
+"for 'in 5 minutes', call get_current_time and compute the HH:MM" guidance that the non-goals
+above explicitly keep. The clause being *removed* is "Omit `days` for a ONE-TIME timer … give
+`days` for a RECURRING timer", which no longer describes the tool.
 
 - `schedule_device` — *"Schedule a device to turn on/off/press ONCE, at a clock time on a specific
   day. `when` says which day and is required; use `soonest` when the user named no day at all.
@@ -149,9 +163,11 @@ that matters, since naming a weekday requires knowing today's, and that guess ca
 Anything unrepresentable (">7 days out", "ביום שישי הבא" — ambiguous even between people) **must
 produce a clarifying question, never a guess.** Stated in the tool description and system prompt.
 
-Boundary rule: a target exactly equal to `now` counts as passed (`target <= now`), matching the
-existing `_one_time_target`. `remove_expired` uses strict `<`, so a row landing exactly on `now` is
-rejected at write time but survives expiry — harmless, noted for consistency.
+Boundary rule: at write time a target exactly equal to `now` counts as passed (`target <= now`),
+matching the existing `_one_time_target`, so such a timer is never created. `remove_expired` uses
+strict `<`, so a stored row whose moment later becomes exactly `now` survives that one comparison.
+Harmless — the two are noted only so an implementer doesn't "fix" one into disagreeing with the
+other.
 
 ### Timezone and `fire_at` format
 
@@ -179,6 +195,19 @@ The design pins all four:
   `…T02:00:00+02:00` and an already-passed row fails to expire. UTC is the only format where
   lexicographic order equals instant order.
 
+**Both sides of that comparison must be UTC.** Storage alone is not enough: `remove_expired` is
+called today as `now_fn().isoformat()` from `schedules.py:155` and `cloud_scheduler.py:21`, which
+under the pinned `now_fn` yields `+03:00`. Comparing a `+03:00` now against `+00:00` rows
+lexicographically deletes live timers — e.g. `fire_at = 2026-08-15T22:00:00+00:00` (01:00 local on
+the 16th) against `now = 2026-08-16T00:30:00+03:00` (21:30 UTC, half an hour *before* it fires)
+compares as `"2026-08-15…" < "2026-08-16…"` and drops it. That is the same silent-wrong-date family
+as the bug being fixed. So: **`remove_expired(now_iso)` takes a UTC ISO string**, both call sites
+convert, and this is stated on the method's contract.
+
+Anywhere a stored `fire_at` is matched against a *calendar date* — notably the cancel path below —
+it must first be converted back to HOME_TZ. String-prefixing the UTC value would put a 01:00-local
+timer on the previous day.
+
 ### Fired timers must not resurrect
 
 `_program_device` rebuilds a Bot's entire alarm set from `store.list(device)`, and `remove_expired`
@@ -195,6 +224,17 @@ the alarm — untracked by `get_schedule`, unreachable by `cancel_schedule`, and
 of `MAX_ALARMS = 5`. So `remove_expired` must **return the rows it deleted**, and every affected
 BLE device gets reprogrammed, not just the device being written. (Cloud rows need no equivalent:
 their one-time jobs self-remove in `_make_cb`, and orphaned past-due JobQueue entries are inert.)
+
+Two behaviours this raises, decided here so the plan doesn't invent them:
+
+- **`_get_schedule_impl` does *not* reprogram.** It keeps calling `remove_expired` to keep its
+  listing honest, but stays read-only — a "what's scheduled?" question must never trigger BLE
+  writes. Reprogramming happens only in the two tools that already write (`_schedule_impl`,
+  `_cancel_impl`).
+- **A failed reprogram of an unrelated device does not fail the call.** If device A's stale row is
+  expired while the user is scheduling device B, and A's Bot is unreachable, the tool logs a
+  warning and completes B. Failing B because of A would make an unrelated Bot's dead battery block
+  all scheduling. A's row is already gone from the store, so `get_schedule` stays truthful.
 
 **Row contract**, stated explicitly because leaving it implicit is how `days='fri', once=0` got
 written last time. One-time: `days = [weekday of fire_at]`, `once=1`, `fire_at` set. Recurring:
@@ -279,6 +319,27 @@ config would be BLE. The plan must (a) include the hardware spike before any dev
 plus a store-side auto-cancel after firing. The +7 horizon cap above is what keeps every value
 BLE-encodable at all.
 
+## Implementation shape and phasing
+
+The two scheduling tools share **one `_schedule_impl(args, *, recurring: bool, …)`**, bound twice
+in `build_schedule_tools`. The device/action/time validation, the `remove_expired` sweep, the
+`MAX_ALARMS` pre-check, the row-contract write, and the cloud-vs-BLE routing are identical; only
+the when-resolution branch and the output line differ. Two separate impls would duplicate the cap
+check and the row contract — precisely the code whose divergence caused this bug.
+
+The plan should run in three gated phases, because phase 1 is invisible to the model and the
+existing suite is a real regression net for it:
+
+1. **Grounding and safety, no model-facing change** — tz pinning (`build_time_tools`, `now_fn=`
+   wiring, hoisting the `ZoneInfo` import out of the cloud-creds block at `telegram_app.py:111`),
+   UTC `fire_at` plus the both-sides comparison contract, `remove_expired` returning rows with
+   anti-resurrection reprogramming, `CloudScheduler.schedule_row` raising on a past moment,
+   `MAX_ALARMS` pre-check.
+2. **The API change** — `when` enum and `_resolve_fire_at`, the two-tool split with
+   `repetition_phrase`, the date-aware local formatter replacing `readback`, date-aware cancel,
+   the three prompt rules, and the full test migration.
+3. **BLE spike, fallback, rollout** — gated; required only before any device returns to BLE.
+
 ## Testing
 
 Frozen clock (`now_fn`) throughout; no network, no BLE.
@@ -326,8 +387,19 @@ breaks them by design; "make it green" must not mean restoring `days`. Explicitl
   `test_schedule_tools.py:24, 30` (`_one_time_target`), and the import at line 2.
 - `test_schedule_tools.py:71` asserts `once is True and days == ["thu"]` — keep, as it pins the
   one-time row contract, but extend it to assert `fire_at` too.
+- `test_schedule_store.py:39` asserts `remove_expired(...) == 1`; the return type becomes the
+  deleted rows, so this becomes a length assertion. Its fixtures are naive ISO and move to UTC.
+- `test_cloud_scheduler.py:43, 50, 69, 87` build `fire_at` fixtures as `+03:00` strings compared
+  against a `+03:00` now; they move to the UTC contract.
+- `test_time_tool.py:4, 24` and `test_loop.py:41, 53` import `DEFAULT_TOOLS` / `get_current_time`
+  directly, as do `test_telegram_handler.py:98, 118, 140`. **`DEFAULT_TOOLS` is kept** as a
+  host-tz fallback so `handle_message`'s default argument (`telegram_app.py:48`) and these tests
+  keep working; `build_time_tools(tz)` is added alongside it and is what
+  `build_application` uses (`telegram_app.py:123`). Only production wiring becomes tz-pinned.
+- `test_schedule_tools.py:145-154` (the `get_schedule` expiry test) is affected by whichever
+  reprogram decision is taken below.
 
-Every other test in the suite stays green unchanged.
+With those, every other test in the suite stays green unchanged.
 
 ## Migration
 
