@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import statistics
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -12,6 +13,11 @@ log = logging.getLogger("home_agent")
 
 CATEGORIES = ("groceries", "rent", "salary", "utilities", "transport", "health",
               "restaurants", "subscriptions", "shopping", "cash", "transfer", "other")
+
+# cash_flow_status classification (v2.1, category-driven — see docs/superpowers/sdd/c-1-plan.md).
+# Fixed = committed monthly outflow: named categories + committed savings/gmal (transfer negatives).
+FIXED_CATEGORIES = frozenset({"rent", "utilities", "subscriptions"})
+TRANSFER_CATEGORY = "transfer"
 
 _WS = re.compile(r"\s+")
 _CARD_BILL_RE = re.compile(r"(חיוב|זיכוי)\s+לכרטיס\s+ויזה\s+(\d+)")
@@ -476,6 +482,139 @@ def _forecast_impl(args, *, store, now_fn) -> str:
     return "\n".join(lines)
 
 
+def _month_start(d):
+    return d.replace(day=1)
+
+
+def _prev_month_start(d):
+    return (_month_start(d) - timedelta(days=1)).replace(day=1)
+
+
+def _month_end(start):
+    nxt = start.replace(year=start.year + 1, month=1, day=1) if start.month == 12 \
+        else start.replace(month=start.month + 1, day=1)
+    return nxt - timedelta(days=1)
+
+
+_CASH_FLOW_STATUS_SCHEMA = {"type": "function", "function": {
+    "name": "cash_flow_status",
+    "description": (
+        "Use for 'how much is safe/left to spend this month or this week', budget-remaining, or "
+        "'can we afford X' questions. Computes expected income and fixed costs from the last few full "
+        "months' medians, this month's variable spend so far, and what's left to spend this month and "
+        "per week — with a transparency breakdown of what counted as income/fixed. Do NOT use "
+        "financial_summary or cash_flow_forecast for this. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+
+def _cash_flow_terms(store, now_fn) -> dict:
+    """Pure (besides store reads), testable core of cash_flow_status. See
+    docs/superpowers/sdd/c-1-plan.md 'Decisions (locked)' for the exact rules this encodes:
+    income/fixed are MEDIANS over the last 3 FULL completed calendar months, classified by
+    canonical category name (never Hebrew text); uncategorized positives are fail-safe EXCLUDED
+    from income (and flagged); variable_spent is this month's actual non-fixed, non-transfer spend."""
+    today = now_fn().date()
+    this_month_start = _month_start(today)
+
+    m3 = _prev_month_start(this_month_start)  # most recent full month
+    m2 = _prev_month_start(m3)
+    m1 = _prev_month_start(m2)
+    window_starts = [m1, m2, m3]  # oldest -> newest
+
+    rules = store.active_rules()
+    income_by_month, fixed_by_month = [], []
+    income_categories, fixed_categories = {}, {}
+    uncategorized_income_agorot = 0
+    window_months = []
+
+    for start in window_starts:
+        window_months.append(start.strftime("%Y-%m"))
+        rows = store.transactions_between(start.isoformat(), _month_end(start).isoformat())
+        month_income = month_fixed = 0
+        for row in rows:
+            amt = row["amount_agorot"]
+            cat = _categorize(row["description"], rules)
+            if amt > 0:
+                if cat is None:
+                    uncategorized_income_agorot += amt  # fail-safe: excluded from income, flagged
+                elif cat == TRANSFER_CATEGORY:
+                    continue  # own money returning (savings withdrawal) -> not income
+                else:
+                    month_income += amt
+                    income_categories[cat] = income_categories.get(cat, 0) + amt
+            elif amt < 0:
+                if cat in FIXED_CATEGORIES:
+                    month_fixed += -amt
+                    fixed_categories[cat] = fixed_categories.get(cat, 0) + (-amt)
+                elif cat == TRANSFER_CATEGORY:
+                    month_fixed += -amt  # committed savings/gmal deposit
+                    fixed_categories[TRANSFER_CATEGORY] = fixed_categories.get(TRANSFER_CATEGORY, 0) + (-amt)
+        income_by_month.append(month_income)
+        fixed_by_month.append(month_fixed)
+
+    income_expected = int(statistics.median(income_by_month))
+    fixed_expected = int(statistics.median(fixed_by_month))
+    assert isinstance(income_expected, int) and isinstance(fixed_expected, int)
+
+    rows_this_month, partial_flag = _spendable_rows(store, this_month_start.isoformat(), today.isoformat())
+    variable_spent = 0
+    for row in rows_this_month:
+        amt = row["amount_agorot"]
+        if amt >= 0:
+            continue
+        cat = _categorize(row["description"], rules)
+        if cat in FIXED_CATEGORIES or cat == TRANSFER_CATEGORY:
+            continue  # this month's own fixed/transfer payments aren't "variable"
+        variable_spent += -amt
+
+    safe_to_spend = income_expected - fixed_expected - variable_spent
+    days_left = (_month_end(this_month_start) - today).days + 1  # inclusive of today
+    weeks_left = max(1, -(-days_left // 7))  # ceil(days_left/7), min 1
+    weekly = safe_to_spend // weeks_left
+    assert isinstance(weekly, int)
+
+    return {
+        "income_expected": income_expected,
+        "fixed_expected": fixed_expected,
+        "variable_spent": variable_spent,
+        "safe_to_spend": safe_to_spend,
+        "weeks_left": weeks_left,
+        "weekly": weekly,
+        "days_left": days_left,
+        "window_months": window_months,
+        "income_categories": income_categories,
+        "fixed_categories": fixed_categories,
+        "uncategorized_income_agorot": uncategorized_income_agorot,
+        "partial_flag": partial_flag,
+    }
+
+
+def _cash_flow_status_impl(args, *, store, now_fn) -> str:
+    t = _cash_flow_terms(store, now_fn)
+    lines = []
+    if t["uncategorized_income_agorot"]:
+        lines.append(
+            f"⚠️ נמצאו זיכויים ללא קטגוריה בסך {_shekels(t['uncategorized_income_agorot'])} בחודשי הבדיקה "
+            "— לא נספרו כהכנסה (שמרני, כדי לא לנפח את הסכום הפנוי). מומלץ להוסיף כלל קטגוריה עבורם."
+        )
+    lines.append(f"הכנסה חודשית צפויה (חציון 3 חודשים מלאים): {_shekels(t['income_expected'])}")
+    lines.append(f"הוצאות קבועות צפויות (שכירות/חשבונות/מנויים + חיסכון מחויב): {_shekels(t['fixed_expected'])}")
+    lines.append(f"הוצאות משתנות עד כה החודש: {_shekels(t['variable_spent'])}")
+    lines.append(f"נשאר להוציא החודש: {_shekels(t['safe_to_spend'])} (~{_shekels(t['weekly'])} לשבוע)")
+    if t["partial_flag"]:
+        lines.append(_PARTIAL_FLAG)
+    lines.append("שקיפות — חודשים שנבדקו: " + ", ".join(t["window_months"]))
+    if t["income_categories"]:
+        lines.append("נספר כהכנסה: " + ", ".join(
+            f"{c} {_shekels(v)}" for c, v in sorted(t["income_categories"].items(), key=lambda kv: -kv[1])))
+    if t["fixed_categories"]:
+        lines.append("נספר כקבוע: " + ", ".join(
+            f"{c} {_shekels(v)}" for c, v in sorted(t["fixed_categories"].items(), key=lambda kv: -kv[1])))
+    lines.append("הערה: כסף שנמשך מהחיסכון החודש אינו מתווסף אוטומטית לסכום הפנוי.")
+    return "\n".join(lines)
+
+
 def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
     now_fn = now_fn or _now
     fetch_fns = fetch_fns or {}
@@ -498,6 +637,8 @@ def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
              impl=lambda a: _del_rule_impl(a, store=store)),
         Tool(name="cash_flow_forecast", schema=_FORECAST_SCHEMA,
              impl=lambda a: _forecast_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="cash_flow_status", schema=_CASH_FLOW_STATUS_SCHEMA,
+             impl=lambda a: _cash_flow_status_impl(a, store=store, now_fn=now_fn)),
     ]
 
 
