@@ -90,39 +90,68 @@ its own tool:
 
 | Tool | Produces |
 |---|---|
-| `schedule_device(device, action, time, when=?, in_days=?)` | **one-time** timer |
-| `schedule_recurring_device(device, action, time, days)` | **recurring weekly** timer |
+| `schedule_device(device, action, time, when)` | **one-time** timer |
+| `schedule_recurring_device(device, action, time, days, repetition_phrase)` | **recurring weekly** timer |
 
 Rationale: with both on one tool, "תדליק ביום שישי" has two equally natural encodings —
 `when="fri"` (correct) and `days=["fri"]` (recurring forever) — and nothing structural
-distinguishes them. Splitting the tools means a one-time weekday request has exactly one
-representation, and recurring requires deliberately reaching for a differently-named tool whose
-description opens with *"Use ONLY when the user explicitly asked for repetition (כל יום / כל
-שישי / every week). This is rare."*
+distinguishes them. Splitting them means a one-time weekday request has exactly one
+representation.
+
+The split alone is not enough, though: `schedule_recurring_device(days=["fri"])` still encodes
+"one-time Friday" wrongly, and that is the exact shape the model reached for during the incident
+(rows 40–43). So the recurring tool takes a **required `repetition_phrase`** — the user's own
+words that mean repetition ("כל יום", "כל שישי", "every week"). The impl rejects an empty or
+whitespace-only value. A model that has to quote non-existent words is far likelier to fall back
+to the one-time tool than one that merely reads a discouraging description.
+
+Exact descriptions (the model-facing surface, which CLAUDE.md says *is* the instruction):
+
+- `schedule_device` — *"Schedule a device to turn on/off/press ONCE, at a clock time on a specific
+  day. `when` says which day and is required; use `soonest` when the user named no day at all.
+  Never guess a weekday — if the user's wording does not map cleanly onto a `when` value, or asks
+  for more than a week ahead, ask them which day instead of choosing one."*
+- `schedule_recurring_device` — *"Schedule a device to repeat WEEKLY on given days. Use ONLY when
+  the user explicitly asked for repetition (כל יום / כל שישי / every week) — this is rare. For a
+  single day, even a named weekday like 'ביום שישי', use schedule_device instead. Pass the user's
+  own repetition words in `repetition_phrase`."*
+- `cancel_schedule` — *"Cancel timers. Device alone clears all of them; add `time`, and `when` if
+  two timers share a clock time on different dates. Reports the date of everything cancelled."*
 
 ### One-time: when to fire
 
-`when` is a **required** enum — never inferred from omission, because models over-fill optional
-enums and a spurious `today` would hard-error a request that named no day at all.
+`when` is a **required**, total enum — no optional companion field, and never inferred from
+omission (models over-fill optional enums, and a spurious `today` would hard-error a request that
+named no day at all).
 
-| `when` | Meaning |
-|---|---|
-| `soonest` | today at `time` if still ahead, else tomorrow. **The value to use when the user named no day.** |
-| `today` | today at `time`; error if already passed |
-| `tomorrow` | the next calendar day at `time`, unconditionally |
-| `sun`…`sat` | nearest occurrence of that weekday, today counting only if `time` is still ahead |
+| `when` | Meaning | Max horizon |
+|---|---|---|
+| `soonest` | today at `time` if still ahead, else tomorrow. **The value to use when the user named no day.** | +1 |
+| `today` | today at `time`; error if already passed | 0 |
+| `tomorrow` | the next calendar day at `time`, unconditionally | +1 |
+| `day_after_tomorrow` | two calendar days ahead ("מחרתיים", "בעוד יומיים") | +2 |
+| `in_a_week` | seven calendar days ahead ("בעוד שבוע") | +7 |
+| `sun`…`sat` | nearest occurrence of that weekday, today counting only if `time` is still ahead | +7 |
 
-`in_days` (integer, 0–30) is the escape hatch for everything the enum cannot say, and is mutually
-exclusive with `when`: `מחרתיים` → 2, `בעוד שלושה ימים` → 3, `בעוד שבוע` → 7. Counting the days
-the user *named* is language → number, not calendar arithmetic, so it stays within CLAUDE.md's
-rule. Without it, "מחרתיים" would force the model to name a weekday — which requires knowing
-today's weekday, which is exactly the guess that caused this bug.
+An earlier draft used an integer `in_days` (0–30) instead of the last three rows. It was dropped
+for two reasons, both disqualifying:
 
-Anything still unrepresentable ("ביום שישי הבא" — ambiguous even between people) **must produce a
-clarifying question, never a guess.** Stated in the tool description and the system prompt.
+- **Unreachable.** With `when` required *and* mutually exclusive with `in_days`, no legal call can
+  pass `in_days`. The contract contradicted itself.
+- **Not representable on BLE.** `encode_alarm` emits only `{weekday mask | 0x80, hour, minute}` —
+  there is no date on the wire. A target 10 days out stores only its weekday, so a Bot fires it
+  **~3 days early**. Any horizon beyond 7 days is silently wrong on BLE.
+
+Capping the enum at +7 makes every value round-trip through a weekday, so BLE and cloud agree.
+"מחרתיים" is still representable without the model ever naming a weekday — which is the property
+that matters, since naming a weekday requires knowing today's, and that guess caused this bug.
+
+Anything unrepresentable (">7 days out", "ביום שישי הבא" — ambiguous even between people) **must
+produce a clarifying question, never a guess.** Stated in the tool description and system prompt.
 
 Boundary rule: a target exactly equal to `now` counts as passed (`target <= now`), matching the
-existing `_one_time_target`.
+existing `_one_time_target`. `remove_expired` uses strict `<`, so a row landing exactly on `now` is
+rejected at write time but survives expiry — harmless, noted for consistency.
 
 ### Timezone and `fire_at` format
 
@@ -132,15 +161,23 @@ the *host system* tz, as a fixed-offset `timezone`, while `CloudScheduler` is bu
 `ZoneInfo(config.home_tz)` (`telegram_app.py:118-119`). Two clocks that disagree whenever the box
 tz is UTC (a common Ubuntu default).
 
-The design pins all three:
+The design pins all four:
 
 - `build_schedule_tools` is wired with `now_fn=lambda: datetime.now(ZoneInfo(config.home_tz))`.
 - `_resolve_fire_at` constructs the target from `date` + `time` + `ZoneInfo(home_tz)` — never
   `replace()`/`timedelta` arithmetic on a fixed-offset value, which would stamp tomorrow's
   wall-clock with today's offset and fire an hour early across the October DST boundary.
-- `fire_at` is **always** stored tz-aware, in HOME_TZ, at second precision. `remove_expired`
-  compares ISO strings lexicographically (`schedule_store.py:66`), which is only correct if every
-  row shares one canonical format.
+- **`get_current_time` too.** `tools.py:15` also uses `datetime.now().astimezone()`, and it is the
+  clock the *model* reads — it drives the model's own choice between `when="fri"` and `"sat"`. Its
+  own comment records an earlier weekday-guessing bug. Pinning the scheduler's clock while leaving
+  the model's on host tz is half a fix. `DEFAULT_TOOLS` is a module-level constant, so this needs
+  a `build_time_tools(tz)` factory wired from `build_application`.
+- `fire_at` is stored as **UTC** ISO with a `+00:00` suffix, and rendered in HOME_TZ for display
+  only. This is forced by `remove_expired`, which compares ISO strings *lexicographically*
+  (`schedule_store.py:66`): local-time strings sort by wall clock before the offset suffix is ever
+  reached, so across Israel's October fall-back `…T02:30:00+03:00` sorts after the later instant
+  `…T02:00:00+02:00` and an already-passed row fails to expire. UTC is the only format where
+  lexicographic order equals instant order.
 
 ### Fired timers must not resurrect
 
@@ -149,24 +186,42 @@ is called *only* from `_get_schedule_impl` and `CloudScheduler.reconcile`. So a 
 survives (BLE has no fire callback at all), and the next unrelated write to that device re-arms it
 for the same weekday next week. It also silently consumes the `MAX_ALARMS = 5` budget.
 
-Fix: `_schedule_impl` and `_cancel_impl` both call `store.remove_expired(now_fn().isoformat())`
-before touching the store. This is a pre-existing bug that the new design would have promoted from
-rare to routine.
+Fix: `_schedule_impl` and `_cancel_impl` both expire stale rows before touching the store. This is
+a pre-existing bug that the new design would have promoted from rare to routine.
+
+Clearing the *store* is not sufficient on its own, though: `_program_device` rewrites one device's
+alarms, so expiring device A's fired row while scheduling device B leaves A's **Bot** still holding
+the alarm — untracked by `get_schedule`, unreachable by `cancel_schedule`, and still consuming one
+of `MAX_ALARMS = 5`. So `remove_expired` must **return the rows it deleted**, and every affected
+BLE device gets reprogrammed, not just the device being written. (Cloud rows need no equivalent:
+their one-time jobs self-remove in `_make_cb`, and orphaned past-due JobQueue entries are inert.)
+
+**Row contract**, stated explicitly because leaving it implicit is how `days='fri', once=0` got
+written last time. One-time: `days = [weekday of fire_at]`, `once=1`, `fire_at` set. Recurring:
+`days = <user's days>`, `once=0`, `fire_at = NULL`. The two are distinguished by **`once`, never by
+`days`** — both shapes can carry a single weekday.
 
 ### Cancel must be unambiguous
 
 `_cancel_impl` matches on `device` + `time` only (`schedules.py:172`), so with one-time timers now
 the norm, "Saturday 18:30" and "next Friday 18:30" are indistinguishable and one cancel kills both.
-`cancel_schedule` gains an optional `when`/`in_days` (same resolution rule) to disambiguate, and
-its confirmation states the date of every row removed and their count.
+
+`cancel_schedule` gains an optional `when` (same resolution rule) to disambiguate. This is not
+implementable through `store.remove(device, time)`, whose SQL has no date predicate
+(`schedule_store.py:48-56`), so `_cancel_impl` changes shape: select candidate rows in Python
+(device, optional `time`, optional resolved `fire_at` date), delete each by `store.remove_id`,
+unschedule each cloud row by id, and re-add exactly those rows on the rollback path. `store.remove`'s
+rowcount is no longer the "nothing matched" signal — the selected-row list is. When a date is
+given, **recurring rows are excluded** (they have `fire_at IS NULL` and would otherwise match on
+device+time and be deleted silently).
 
 ### Output format
 
 Tools return English; the model renders Hebrew, as elsewhere.
 
 - One-time: `kitchen: on at 18:30 on 2026-08-15 (Sat) — ONE-TIME`
-- One-time landing a week out: same, plus ` — NEXT WEEK` (so a weekday token that quietly rolled
-  +7 is visible).
+- One-time more than 6 days out: same, plus ` — NEXT WEEK`, so a weekday token that quietly rolled
+  +7 is visible. The date is always printed regardless of the flag.
 - Recurring: `kitchen: on at 18:30 — RECURRING, every fri`
 - Cancel: `kitchen: cancelled 1 timer — on at 18:30 on 2026-08-15 (Sat)`
 
@@ -194,11 +249,12 @@ cause. Additionally, each turn logs which tools ran, so a recurrence is detectab
 
 | Condition | Behaviour |
 |---|---|
-| `when` and `in_days` both given | Error naming which to keep. |
+| `when` missing | Error listing valid tokens (it is required). |
 | Unknown `when` token | Error listing valid tokens. Strict lowercase; `"friday"`/`"שישי"` rejected. |
 | `when="today"`, time already passed | Error that also instructs the retry: *if the user did not explicitly say היום, retry with `soonest` or `tomorrow`*. Self-healing, so a late-evening "18:30" isn't a dead end. |
-| `in_days` out of range | Error; ask the user for an explicit day. |
-| Malformed `time`, >5 timers, cloud failure | Existing paths unchanged (`validate`, `store.remove_id` rollback). |
+| `repetition_phrase` empty on the recurring tool | Error: use `schedule_device` unless the user actually asked for repetition. |
+| More than 5 timers on a device | `validate` currently runs only inside `_program_device`, i.e. **BLE only**, so cloud devices can accumulate unbounded rows. `_schedule_impl` gains a per-device count check before `store.add`, covering both routes. |
+| Malformed `time`, cloud failure | Existing paths unchanged (`validate`, `store.remove_id` rollback). |
 | Resolved moment already past at scheduling time | `CloudScheduler.schedule_row` currently `return`s silently (`cloud_scheduler.py:32-33`) while the tool reports ✅ — a timer that never fires. It must raise so `_schedule_impl`'s existing rollback runs. `reconcile` relies on the silent skip, so it gets its own guard. |
 
 ## Open hardware question (gates BLE only)
@@ -209,10 +265,19 @@ once **on that weekday**" is **unverified**. Every alarm this agent has ever wri
 Saturday is new. If bit 7 instead means "fire at the next HH:MM, then delete", a BLE one-time fires
 **tonight** — the original bug, unfixed.
 
-This does not block: all five devices in the box's `devices.yaml` are currently `cloud_id`-routed,
-and cloud timers fire from `CloudScheduler` on an exact datetime. The plan must (a) include a
-hardware spike before any device returns to BLE, and (b) note the fallback if the semantic fails —
-program BLE one-timers as recurring-on-that-weekday plus a store-side auto-cancel after firing.
+**Routing, verified 2026-08-15:** the **box's** `devices.yaml` routes all five devices via
+`cloud_id` (living_room, dining, kitchen, ac, garden — each commented "cloud via Hub Mini"). The
+**repo's** copy still lists `ble_id` for all five, and memory `box-deployment.md` still says three
+lights stay on BLE — both are stale, because `devices.yaml` is excluded from the deploy rsync and
+diverges by design. Cloud timers fire from `CloudScheduler` on an exact datetime, so the firmware
+semantic is not exercised on the live box today.
+
+It remains a real requirement, since the code fully supports BLE and a fresh deploy from the repo
+config would be BLE. The plan must (a) include the hardware spike before any device returns to BLE
+— program a Bot with `once` + a *non-adjacent* weekday and confirm it does not fire early — and
+(b) note the fallback if the semantic fails: program BLE one-timers as recurring-on-that-weekday
+plus a store-side auto-cancel after firing. The +7 horizon cap above is what keeps every value
+BLE-encodable at all.
 
 ## Testing
 
@@ -224,8 +289,8 @@ in one turn, since that was the real request.
 
 **Resolution:** `when="fri"` on a Friday at 17:00 → today; at 19:00 → +7 days and the output says
 NEXT WEEK. `tomorrow` at 23:00 and 01:00 → both the following calendar day. `soonest` at 17:21 →
-today; at 19:00 → tomorrow. `today` with a passed time → error, nothing stored. `in_days=2` →
-+2 days. `when` + `in_days` → error, nothing stored.
+today; at 19:00 → tomorrow. `today` with a passed time → error, nothing stored. `day_after_tomorrow`
+→ +2. `in_a_week` → +7. Missing or unknown `when` → error, nothing stored.
 
 **Timezone:** resolution uses HOME_TZ regardless of host tz; a "tomorrow" spanning Israel's
 October DST end lands at the right *wall-clock* time; `remove_expired` correctly drops a row
@@ -235,7 +300,10 @@ written on the other side of that transition.
 old row gone from the store and absent from the alarms written.
 
 **Recurring:** `schedule_recurring_device` sets `once=False`, `fire_at=None`, and the output
-contains "RECURRING". `schedule_device` has no `days` property in its schema.
+contains "RECURRING". `schedule_device` has no `days` property in its schema. Empty
+`repetition_phrase` → error, nothing stored. A `make_fake_client` test asserting the model reaches
+for `schedule_device`, **not** the recurring tool, on "תדליק את האור בשבת ב-18:30" — the incident's
+exact wrong turn.
 
 **Cancel:** two one-time timers at the same HH:MM on different dates are individually cancellable;
 the confirmation names dates and a count.
@@ -244,14 +312,31 @@ the confirmation names dates and a count.
 required, valid enum values, `days` absent from `schedule_device`), and that a tool error string
 is fed back so the model can recover.
 
-**Prompt:** stays digit-free and byte-stable (existing tests).
+**Prompt:** stays digit-free and byte-stable (existing tests). Plus a `make_fake_client` turn
+asserting the assistant's reply actually contains the returned date — prompt rule 2 is otherwise
+unverified, and "model receives the date, still says מחר" is the original failure.
 
-**Baseline:** the existing suite stays green.
+**Existing tests must be migrated, not merely kept green.** Removing `days` from `schedule_device`
+breaks them by design; "make it green" must not mean restoring `days`. Explicitly:
+
+- Move to `schedule_recurring_device` (they assert genuine recurring behaviour):
+  `test_schedule_tools.py:78, 96-97, 106-107, 135, 161, 172-173, 196, 207` and
+  `test_schedules_cloud.py:29, 36, 43`.
+- Rewrite against `_resolve_fire_at`, since the helper is replaced:
+  `test_schedule_tools.py:24, 30` (`_one_time_target`), and the import at line 2.
+- `test_schedule_tools.py:71` asserts `once is True and days == ["thu"]` — keep, as it pins the
+  one-time row contract, but extend it to assert `fire_at` too.
+
+Every other test in the suite stays green unchanged.
 
 ## Migration
 
-None. The `schedules` table was emptied on 2026-08-15 when the stale recurring Friday timers from
-this incident were cancelled, and is currently empty on the box.
+Expected to be none: the `schedules` table was emptied on 2026-08-15 when the stale recurring
+Friday timers from this incident were cancelled. But this must be **re-checked at deploy time**,
+not assumed — any row written between then and rollout carries a host-tz, fixed-offset `fire_at`
+and would mix formats with the new UTC canonical form, tripping exactly the lexicographic-compare
+bug described above. Rollout step: confirm `select count(*) from schedules` is zero, or normalize
+surviving `fire_at` values to UTC before starting the new code.
 
 ## Rollout
 
