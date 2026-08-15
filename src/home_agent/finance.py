@@ -530,7 +530,14 @@ def _cash_flow_terms(store, now_fn) -> dict:
 
     for start in window_starts:
         window_months.append(start.strftime("%Y-%m"))
-        rows = store.transactions_between(start.isoformat(), _month_end(start).isoformat())
+        month_end = _month_end(start)
+        rows = store.transactions_between(start.isoformat(), month_end.isoformat())
+        # A card whose Max detail covers this window month is itemized (its purchases are
+        # categorized individually below); only an UN-itemized card's bank bill-line should be
+        # folded into fixed_expected here — otherwise it'd double-count against the itemized rows.
+        covered = {_card4(c) for c in
+                   store.covered_cards("max", start.isoformat(), month_end.isoformat(),
+                                       grace_days=_COVERAGE_GRACE_DAYS)}
         month_income = month_fixed = 0
         for row in rows:
             amt = row["amount_agorot"]
@@ -544,7 +551,13 @@ def _cash_flow_terms(store, now_fn) -> dict:
                     month_income += amt
                     income_categories[cat] = income_categories.get(cat, 0) + amt
             elif amt < 0:
-                if cat in FIXED_CATEGORIES:
+                bill = _CARD_BILL_RE.search(_norm_desc(row["description"]))
+                if bill and _card4(bill.group(2)) not in covered:
+                    # un-itemized card's monthly bill: a committed bill like rent, not variable
+                    # spending on its posting date.
+                    month_fixed += -amt
+                    fixed_categories["card_bills"] = fixed_categories.get("card_bills", 0) + (-amt)
+                elif cat in FIXED_CATEGORIES:
                     month_fixed += -amt
                     fixed_categories[cat] = fixed_categories.get(cat, 0) + (-amt)
                 elif cat == TRANSFER_CATEGORY:
@@ -563,6 +576,8 @@ def _cash_flow_terms(store, now_fn) -> dict:
         amt = row["amount_agorot"]
         if amt >= 0:
             continue
+        if _CARD_BILL_RE.search(_norm_desc(row["description"])):
+            continue  # un-itemized card's bill: committed (folded into fixed_expected), never variable
         cat = _categorize(row["description"], rules)
         if cat in FIXED_CATEGORIES or cat == TRANSFER_CATEGORY:
             continue  # this month's own fixed/transfer payments aren't "variable"

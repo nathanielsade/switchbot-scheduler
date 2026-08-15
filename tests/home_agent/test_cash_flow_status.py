@@ -177,6 +177,27 @@ def test_trailing_window_boundary():
     assert t["income_expected"] == _SALARY
 
 
+def test_uncovered_card_bill_counted_as_fixed_not_variable():
+    store = _store()
+    _seed_rules(store)
+    _seed_window(store)
+    _CARD_BILL = 800_000  # ~8,000 lump bill for an un-itemized ("6146") card
+    # Un-itemized card-bill lines in each window month + this month. No record_coverage for
+    # "6146" -> the card is NOT covered/itemized (per _spendable_rows Option A it's kept, not
+    # excluded), so its bill must count as FIXED (committed), never as this month's variable spend.
+    store.upsert_transactions([
+        _txn("חיוב לכרטיס ויזה 6146", -_CARD_BILL, "2026-04-15"),
+        _txn("חיוב לכרטיס ויזה 6146", -_CARD_BILL, "2026-05-15"),
+        _txn("חיוב לכרטיס ויזה 6146", -_CARD_BILL, "2026-06-15"),
+        _txn("חיוב לכרטיס ויזה 6146", -_CARD_BILL, "2026-07-05"),
+    ])
+    t = _cash_flow_terms(store, _frozen_mid_july)
+    assert t["fixed_expected"] == _RENT + _SUBSCRIPTIONS + _DEPOSIT + _CARD_BILL
+    assert t["fixed_categories"].get("card_bills") == _CARD_BILL * 3
+    # this month's own card-bill lump must NOT leak into variable_spent
+    assert t["variable_spent"] == 0
+
+
 def test_start_of_month_and_overspent_no_clamp():
     store = _store()
     _seed_rules(store)
