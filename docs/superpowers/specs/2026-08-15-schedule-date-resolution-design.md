@@ -314,7 +314,10 @@ semantic is not exercised on the live box today.
 
 It remains a real requirement, since the code fully supports BLE and a fresh deploy from the repo
 config would be BLE. The plan must (a) include the hardware spike before any device returns to BLE
-— program a Bot with `once` + a *non-adjacent* weekday and confirm it does not fire early — and
+— program a Bot with `once` + a *non-adjacent* weekday and confirm it does not fire early. The
+spike must also cover `in_a_week` specifically: it resolves to **today's own weekday**, so if the
+firmware reads bit 7 as "next occurrence of that weekday" and the time is still ahead today, a BLE
+`in_a_week` would fire *today* rather than in seven days. Cloud is unaffected (exact datetime). And
 (b) note the fallback if the semantic fails: program BLE one-timers as recurring-on-that-weekday
 plus a store-side auto-cancel after firing. The +7 horizon cap above is what keeps every value
 BLE-encodable at all.
