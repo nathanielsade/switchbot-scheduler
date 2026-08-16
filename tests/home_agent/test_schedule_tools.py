@@ -384,8 +384,13 @@ def test_get_schedule_lists_dates_and_marks_recurring(tmp_path):
     assert "RECURRING" in out
 
 
-def test_model_reaches_for_the_one_time_tool_on_a_named_weekday(tmp_path, make_fake_client):
-    """The incident's exact wrong turn: 'ביום שישי' must not become a weekly timer."""
+def test_both_schedule_tools_are_offered_and_steering_text_is_present(tmp_path, make_fake_client):
+    """Tool SELECTION cannot be exercised offline: the fake client's script hardcodes which
+    tool "the model" calls, so no assertion on that call can prove real steering behaviour.
+    What we CAN verify offline is the steering SURFACE the model would actually read: that
+    both tools are offered (so there is a real choice to make) and that the specific clauses
+    telling it to prefer schedule_device for a single named weekday are present verbatim, in
+    both the schedule_recurring_device schema and the system prompt."""
     client = make_fake_client([
         {"tool_calls": [{"id": "c1", "name": "schedule_device",
                          "arguments": {"device": "סלון", "action": "on", "time": "18:30",
@@ -397,10 +402,11 @@ def test_model_reaches_for_the_one_time_tool_on_a_named_weekday(tmp_path, make_f
     run_turn("תדליק את האור בשבת ב-18:30", [], client=client, model="gpt-4o",
              system=FAMILY_SYSTEM_PROMPT, tools=tools)
     sent_tools = {t["function"]["name"] for t in client._calls[0]["tools"]}
-    assert "schedule_recurring_device" in sent_tools               # it WAS available
-    tool_msgs = [m for m in client._calls[-1]["messages"] if m.get("role") == "tool"]
-    assert tool_msgs, "the model made no tool call"
-    assert all("RECURRING" not in m["content"] for m in tool_msgs)
+    assert "schedule_device" in sent_tools
+    assert "schedule_recurring_device" in sent_tools               # a real choice existed
+    recurring_desc = _tool(tools, "schedule_recurring_device").schema["function"]["description"]
+    assert "use schedule_device instead" in recurring_desc
+    assert "one-time by default" in FAMILY_SYSTEM_PROMPT
 
 
 def test_model_states_the_date_in_its_reply(tmp_path, make_fake_client):
