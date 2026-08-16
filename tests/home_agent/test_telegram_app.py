@@ -1,3 +1,4 @@
+from datetime import datetime
 from telegram.ext import Application
 from home_agent.config import Config
 from home_agent.memory import Conversation
@@ -163,6 +164,44 @@ def test_build_application_composes_finance_tools_when_configured(tmp_path, monk
     expected_names = {"sync_finances", "financial_summary", "find_transactions",
                       "spending_by_category", "cash_flow_forecast"}
     assert expected_names <= tool_names, f"Missing tools: {expected_names - tool_names}"
+
+
+def test_build_application_wires_model_clock_and_scheduler_clock_to_the_same_tz(
+        tmp_path, monkeypatch, make_fake_client):
+    # F2: get_current_time (what the MODEL reads to pick a weekday) and the scheduler's
+    # now_fn (what does the date math) MUST resolve to the same timezone — that agreement is
+    # this branch's core claim. Pin a non-default HOME_TZ so a future edit that diverges the
+    # two wirings (e.g. one left on UTC) fails this test instead of only failing silently.
+    import home_agent.telegram_app as ta
+    dev = tmp_path / "devices.yaml"
+    dev.write_text("devices:\n  dining:\n    aliases: [פינת אוכל]\n    ble_id: ID3\n")
+    cfg = Config(openai_api_key="x", telegram_bot_token="123456:ABCdefGHIjklMNOpqrsTUVwxyz012345",
+                 allowed_chat_ids={1}, db_path=str(tmp_path / "m.db"), devices_path=str(dev),
+                 home_tz="America/New_York")
+
+    seen = {}
+    real_time_tools = ta.build_time_tools
+    real_schedule_tools = ta.build_schedule_tools
+
+    def time_spy(tz):
+        seen["time_tz"] = tz
+        return real_time_tools(tz)
+
+    def schedule_spy(registry, store, **kw):
+        seen["now_fn"] = kw.get("now_fn")
+        return real_schedule_tools(registry, store, **kw)
+
+    monkeypatch.setattr(ta, "build_time_tools", time_spy)
+    monkeypatch.setattr(ta, "build_schedule_tools", schedule_spy)
+    app = build_application(cfg, client=make_fake_client([]),
+                            conversation=Conversation(str(tmp_path / "m.db")))
+    assert isinstance(app, Application)
+
+    assert seen.get("time_tz") is not None
+    assert seen.get("now_fn") is not None
+    model_offset = datetime.now(seen["time_tz"]).utcoffset()
+    scheduler_offset = seen["now_fn"]().utcoffset()
+    assert model_offset == scheduler_offset  # would fail if either wiring diverged to a different zone
 
 
 def test_build_application_omits_finance_tools_when_unconfigured(tmp_path, monkeypatch, make_fake_client):

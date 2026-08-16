@@ -171,11 +171,18 @@ def _expire_and_reprogram(store, registry, write_fn, now_fn):
     for device in {r["device"] for r in store.remove_expired(_utc_iso(now_fn()))}:
         if registry.resolve(device) is None or registry.is_cloud(device):
             continue          # cloud one-time jobs self-remove in CloudScheduler._make_cb
+        row_ids = [r["id"] for r in store.list(device)]
         try:
             _program_device(device, store, registry, write_fn, now_fn)
-        except Exception as e:
-            # An unrelated Bot's dead battery must not block the call the user made.
-            log.warning("could not reprogram %s after expiry: %s", device, type(e).__name__)
+        except ScheduleError:
+            # A validation bug, not an unreachable Bot — let it surface with a real traceback
+            # instead of being hidden behind the same log line as a routine offline device.
+            raise
+        except Exception:
+            # An unrelated Bot's dead battery must not block the call the user made — but log
+            # with the traceback + which device/rows, so a genuine coding defect (KeyError,
+            # AttributeError, TypeError…) is distinguishable from a routine offline device.
+            log.warning("could not reprogram %s (rows=%s) after expiry", device, row_ids, exc_info=True)
 
 
 def _describe_row(action, time_str, days, once, fire_at, now):

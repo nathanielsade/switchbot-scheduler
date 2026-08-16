@@ -2,6 +2,18 @@ import json, logging
 
 log = logging.getLogger("home_agent")
 
+# Tool names whose results carry sensitive household data (bank balance, merchant names,
+# transaction amounts — see finance.py) that must never be logged verbatim: the bot runs as a
+# systemd service, so log lines land in journald, which is readable by the adm/systemd-journal
+# groups — broader than the SQLite file's own permissions. Logging that one of these tools RAN is
+# still the point (the compensating control for the agent claiming an action it didn't take) —
+# only the content is withheld.
+_SENSITIVE_TOOLS = frozenset({
+    "sync_finances", "financial_summary", "find_transactions", "spending_by_category",
+    "list_uncategorized_merchants", "set_category_rule", "list_category_rules",
+    "delete_category_rule", "cash_flow_forecast",
+})
+
 
 def run_turn(user_text, history, *, client, model, system, tools, max_steps=10):
     """Run one agentic turn: OpenAI function-calling loop until the model stops calling tools.
@@ -35,6 +47,11 @@ def run_turn(user_text, history, *, client, model, system, tools, max_steps=10):
                 result = tool.impl(args) if tool else f"error: unknown tool {tc.function.name}"
             except Exception as e:
                 result = f"error: {e}"
-            log.info("tool %s -> %s", tc.function.name, str(result)[:120].replace("\n", " | "))
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
+            result_str = str(result)
+            if tc.function.name in _SENSITIVE_TOOLS:
+                marker = "error" if result_str.startswith("error:") else f"ok ({len(result_str)} chars)"
+                log.info("tool %s -> %s", tc.function.name, marker)
+            else:
+                log.info("tool %s -> %s", tc.function.name, result_str[:120].replace("\n", " | "))
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
     return (msg.content if msg else None) or "error: exceeded max tool-call steps"

@@ -67,6 +67,22 @@ def test_cloud_one_time_device_7_days_out_still_works(tmp_path):
         {"device": "גינה", "action": "on", "time": "18:30", "when": "in_a_week"})
     assert "✅" in out
     assert sch.scheduled and store.list("garden")
+    # F1: only cloud devices can reach >6 days out, so the "NEXT WEEK" label's only coverage
+    # lives here. Both directions must hold — the positive alone would pass if the label were
+    # emitted unconditionally.
+    assert "NEXT WEEK" in out
+
+
+def test_cloud_one_time_device_tomorrow_has_no_next_week_label(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.db")); sch = FakeScheduler()
+    tools = {t.name: t for t in build_schedule_tools(
+        _reg(tmp_path), store,
+        write_fn=lambda *a: (_ for _ in ()).throw(AssertionError("no BLE for cloud")),
+        now_fn=_now, scheduler=sch)}
+    out = tools["schedule_device"].impl(
+        {"device": "גינה", "action": "on", "time": "18:30", "when": "tomorrow"})
+    assert "✅" in out
+    assert "NEXT WEEK" not in out
 
 
 def test_cloud_cancel_rolls_back_on_unschedule_failure(tmp_path):
