@@ -21,7 +21,10 @@ class CloudScheduler:
         self.store.remove_expired(self.now_fn().astimezone(_dt_timezone.utc).isoformat())
         for row in self.store.list():
             if self.registry.is_cloud(row["device"]):
-                self.schedule_row(row)
+                try:
+                    self.schedule_row(row)
+                except ValueError:
+                    continue          # already-past rows are expected on restart
 
     def schedule_row(self, row):
         name = _job_name(row["id"])
@@ -30,7 +33,9 @@ class CloudScheduler:
             if when.tzinfo is None:
                 when = when.replace(tzinfo=self.tz)
             if when <= self.now_fn():
-                return
+                # Must raise, not return: _schedule_impl rolls the store row back on
+                # failure, and a silent return reports ✅ for a timer that never fires.
+                raise ValueError("that moment has already passed")
             self.jq.run_once(self._make_cb(row), when=when, name=name)
         else:
             hh, mm = (int(x) for x in row["time"].split(":"))

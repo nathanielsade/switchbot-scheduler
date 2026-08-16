@@ -140,3 +140,21 @@ def test_weekday_mapping_multiple_days(tmp_path):
     cs.schedule_row(row)
     job = jq.get_jobs_by_name(f"switchbot-cloud:{rid}")[0]
     assert job.days == (1, 2, 5), f"Expected (1, 2, 5) for mon/tue/fri, got {job.days}"
+
+def test_schedule_row_raises_for_past_one_time(tmp_path):
+    import pytest
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)   # note: (store, cs) — store first
+    row = {"id": 1, "device": "garden", "action": "on", "time": "09:00",
+           "days": ["thu"], "once": True, "fire_at": "2026-07-16T06:00:00+00:00"}
+    with pytest.raises(ValueError):
+        cs.schedule_row(row)                       # NOW is 12:00 Jerusalem = 09:00Z
+
+
+def test_reconcile_skips_past_rows_without_raising(tmp_path):
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    # fire_at EXACTLY equal to now: remove_expired's strict "<" keeps the row, so it really
+    # reaches schedule_row, whose "<=" raises. A row merely in the past would be deleted by
+    # the sweep first, and this test would then pass even without the code change.
+    store.add("garden", "on", "12:00", ["thu"], True, "2026-07-16T09:00:00+00:00")
+    cs.reconcile()                                 # must not raise
+    assert jq.jobs == []
