@@ -34,10 +34,31 @@ def test_remove_id_and_expired(tmp_path):
     rid = s.add("kitchen", "on", "18:00", ["mon"], False)
     s.remove_id(rid)
     assert s.list() == []
-    s.add("kitchen", "on", "08:00", ["thu"], True, fire_at="2026-07-09T08:00:00")
-    s.add("kitchen", "on", "20:00", ["thu"], True, fire_at="2026-07-09T20:00:00")
-    assert s.remove_expired("2026-07-09T12:00:00") == 1   # only the 08:00 one is past
+    s.add("kitchen", "on", "08:00", ["thu"], True, fire_at="2026-07-09T08:00:00+00:00")
+    s.add("kitchen", "on", "20:00", ["thu"], True, fire_at="2026-07-09T20:00:00+00:00")
+    assert len(s.remove_expired("2026-07-09T12:00:00+00:00")) == 1   # only the 08:00 one is past
     assert [r["time"] for r in s.list("kitchen")] == ["20:00"]
+
+
+def test_remove_expired_returns_deleted_rows(tmp_path):
+    s = ScheduleStore(str(tmp_path / "s.db"))
+    s.add("kitchen", "on", "08:00", ["thu"], True, fire_at="2026-07-09T05:00:00+00:00")
+    s.add("kitchen", "on", "20:00", ["thu"], True, fire_at="2026-07-09T17:00:00+00:00")
+    removed = s.remove_expired("2026-07-09T09:00:00+00:00")
+    assert [r["time"] for r in removed] == ["08:00"]
+    assert removed[0]["device"] == "kitchen"
+    assert [r["time"] for r in s.list("kitchen")] == ["20:00"]
+
+
+def test_remove_expired_orders_by_instant_not_wall_clock(tmp_path):
+    # A UTC row that fires at 01:00 local on the 16th must NOT be expired by a
+    # "now" that is 30 minutes earlier in real time. With local-tz strings this
+    # comparison silently deleted live timers.
+    s = ScheduleStore(str(tmp_path / "s.db"))
+    s.add("kitchen", "on", "01:00", ["sun"], True, fire_at="2026-08-15T22:00:00+00:00")
+    removed = s.remove_expired("2026-08-15T21:30:00+00:00")
+    assert removed == []
+    assert len(s.list("kitchen")) == 1
 
 
 def test_usable_from_a_different_thread(tmp_path):

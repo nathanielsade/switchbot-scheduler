@@ -61,9 +61,21 @@ class ScheduleStore:
             conn.commit()
 
     def remove_expired(self, now_iso):
+        """Delete fired one-time rows and return them. `now_iso` MUST be a UTC ISO
+        string — fire_at is stored UTC precisely so this string comparison orders
+        by instant rather than by wall clock."""
         with closing(sqlite3.connect(self.db_path)) as conn:
-            cur = conn.execute(
-                "DELETE FROM schedules WHERE once = 1 AND fire_at IS NOT NULL AND fire_at < ?",
-                (now_iso,))
-            conn.commit()
-            return cur.rowcount
+            rows = conn.execute(
+                "SELECT id, device, action, time, days, once, fire_at FROM schedules "
+                "WHERE once = 1 AND fire_at IS NOT NULL AND fire_at < ?",
+                (now_iso,),
+            ).fetchall()
+            if rows:
+                conn.execute(
+                    "DELETE FROM schedules WHERE id IN (%s)" % ",".join("?" * len(rows)),
+                    [r[0] for r in rows],
+                )
+                conn.commit()
+        return [{"id": i, "device": d, "action": a, "time": t,
+                 "days": [x for x in dd.split(",") if x], "once": bool(o), "fire_at": f}
+                for i, d, a, t, dd, o, f in rows]
