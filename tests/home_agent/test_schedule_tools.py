@@ -108,10 +108,49 @@ def _tools(tmp_path, writes, now=None):
         now_fn=(now or _thu_1824)), store
 
 
+def test_schedule_device_has_no_days_property(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    props = _tool(tools, "schedule_device").schema["function"]["parameters"]["properties"]
+    assert "days" not in props
+    assert props["when"]["enum"][0] == "soonest"
+    assert "when" in _tool(tools, "schedule_device").schema["function"]["parameters"]["required"]
+
+
+def test_one_time_row_contract(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
+    row = store.list("dining")[0]
+    assert row["once"] is True
+    assert row["days"] == ["sat"]                     # weekday OF the resolved date
+    assert row["fire_at"].endswith("+00:00")          # stored UTC
+
+
+def test_recurring_row_contract_and_required_phrase(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    out = _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "days": ["fri"],
+         "repetition_phrase": "כל שישי"})
+    assert "RECURRING" in out
+    row = store.list("dining")[0]
+    assert row["once"] is False and row["fire_at"] is None
+
+    # _registry() has only living_room/ac/dining — no kitchen, no garden.
+    empty_phrase = _tool(tools, "schedule_recurring_device").impl(
+        {"device": "סלון", "action": "on", "time": "18:30", "days": ["fri"],
+         "repetition_phrase": "  "})
+    assert "schedule_device" in empty_phrase
+    assert store.list("living_room") == []
+
+
 def test_schedule_one_time_sets_once_bit_and_correct_time(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes)
-    out = _tool(tools, "schedule_device").impl({"device": "פינת אוכל", "action": "on", "time": "18:29"})
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:29", "when": "soonest"})
     assert "dining" in out and "✅" in out
     ble_id, alarms = writes[-1]
     assert ble_id == "ID3" and len(alarms) == 1
@@ -124,8 +163,9 @@ def test_schedule_one_time_sets_once_bit_and_correct_time(tmp_path):
 def test_schedule_recurring_expands_days_no_once_bit(tmp_path):
     writes = []
     tools, _ = _tools(tmp_path, writes)
-    _tool(tools, "schedule_device").impl(
-        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["weekdays"]})
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["weekdays"],
+         "repetition_phrase": "כל יום חול"})
     _, alarms = writes[-1]
     assert not (alarms[0]["repeat_byte"] & 0x80)    # not one-time
 
@@ -133,28 +173,34 @@ def test_schedule_recurring_expands_days_no_once_bit(tmp_path):
 def test_schedule_applies_inversion_and_press(tmp_path):
     writes = []
     tools, _ = _tools(tmp_path, writes)
-    _tool(tools, "schedule_device").impl({"device": "סלון", "action": "on", "time": "18:00"})
+    _tool(tools, "schedule_device").impl(
+        {"device": "סלון", "action": "on", "time": "18:00", "when": "soonest"})
     assert writes[-1][1][0]["action"] == 2          # inverted on -> off code 2
-    _tool(tools, "schedule_device").impl({"device": "מזגן", "action": "on", "time": "18:00"})
+    _tool(tools, "schedule_device").impl(
+        {"device": "מזגן", "action": "on", "time": "18:00", "when": "soonest"})
     assert writes[-1][1][0]["action"] == 0          # press-mode -> press code 0
 
 
 def test_schedule_rewrites_full_set_for_device(tmp_path):
     writes = []
     tools, _ = _tools(tmp_path, writes)
-    st = _tool(tools, "schedule_device")
-    st.impl({"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
-    st.impl({"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"]})
+    st = _tool(tools, "schedule_recurring_device")
+    st.impl({"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"],
+             "repetition_phrase": "כל שני"})
+    st.impl({"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"],
+             "repetition_phrase": "כל שני"})
     assert len(writes[-1][1]) == 2                  # 2nd write carries BOTH timers
 
 
 def test_schedule_rejects_over_five_cap_and_rolls_back(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes)
-    st = _tool(tools, "schedule_device")
+    st = _tool(tools, "schedule_recurring_device")
     for i in range(5):
-        st.impl({"device": "פינת אוכל", "action": "on", "time": f"0{i}:00", "days": ["mon"]})
-    out = st.impl({"device": "פינת אוכל", "action": "on", "time": "06:00", "days": ["mon"]})
+        st.impl({"device": "פינת אוכל", "action": "on", "time": f"0{i}:00", "days": ["mon"],
+                 "repetition_phrase": "כל שני"})
+    out = st.impl({"device": "פינת אוכל", "action": "on", "time": "06:00", "days": ["mon"],
+                   "repetition_phrase": "כל שני"})
     assert "5" in out or "max" in out.lower()
     assert len(store.list("dining")) == 5           # 6th rolled back
     assert len(writes) == 5                         # no write for the rejected 6th
@@ -167,7 +213,8 @@ def test_schedule_write_failure_rolls_back(tmp_path):
         raise RuntimeError("out of range")
 
     tools = build_schedule_tools(_registry(), store, write_fn=boom, now_fn=_thu_1824)
-    out = _tool(tools, "schedule_device").impl({"device": "פינת אוכל", "action": "on", "time": "18:00"})
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "when": "soonest"})
     assert "dining" in out and ("range" in out or "couldn't" in out.lower())
     assert store.list("dining") == []               # nothing persisted
 
@@ -181,8 +228,9 @@ def test_schedule_unknown_device(tmp_path):
 def test_get_schedule_lists_and_reports_device(tmp_path):
     writes = []
     tools, _ = _tools(tmp_path, writes)
-    _tool(tools, "schedule_device").impl(
-        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     out = _tool(tools, "get_schedule").impl({"device": "פינת אוכל"})
     assert "dining" in out and "18:00" in out
 
@@ -207,8 +255,9 @@ def test_get_schedule_expires_past_one_time(tmp_path):
 def test_cancel_all_clears_the_bot(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes)
-    _tool(tools, "schedule_device").impl(
-        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל"})
     assert "dining" in out
     assert store.list("dining") == []
@@ -218,9 +267,11 @@ def test_cancel_all_clears_the_bot(tmp_path):
 def test_cancel_one_by_time_keeps_the_rest(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes)
-    st = _tool(tools, "schedule_device")
-    st.impl({"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
-    st.impl({"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"]})
+    st = _tool(tools, "schedule_recurring_device")
+    st.impl({"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"],
+             "repetition_phrase": "כל שני"})
+    st.impl({"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"],
+             "repetition_phrase": "כל שני"})
     _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל", "time": "18:00"})
     assert [r["time"] for r in store.list("dining")] == ["23:00"]
     assert len(writes[-1][1]) == 1                  # rewrote the remaining one
@@ -242,8 +293,9 @@ def test_cancel_write_failure_rolls_back(tmp_path):
             raise RuntimeError("out of range")
 
     tools = build_schedule_tools(_registry(), store, write_fn=flaky, now_fn=_thu_1824)
-    _tool(tools, "schedule_device").impl(
-        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]})
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל"})
     assert "try again" in out.lower() or "not cancelled" in out.lower()
     assert len(store.list("dining")) == 1     # rolled back — record intact so a retry can re-try
@@ -254,10 +306,9 @@ def test_fired_one_time_row_is_not_rearmed_by_a_later_write(tmp_path):
     tools, store = _tools(tmp_path, writes)
     # a one-time row that has already fired (before the frozen clock _thu_1824)
     store.add("dining", "on", "08:00", ["thu"], True, "2026-07-09T05:00:00+00:00")
-    # Task-4-era API: schedule_recurring_device does not exist until Task 7. This test
-    # is migrated to it there, along with the rest of the days= callers.
-    _tool(tools, "schedule_device").impl(
-        {"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"]})
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     assert [r["time"] for r in store.list("dining")] == ["23:00"]
     # only the new alarm was written to the Bot, not the stale 08:00 one
     assert len(writes[-1][1]) == 1
@@ -267,7 +318,8 @@ def test_cancel_names_the_action_and_time_it_cancelled(tmp_path):
     # Regression: the confirmation used to omit the action, so the model called an "off" timer "on".
     writes = []
     tools, _ = _tools(tmp_path, writes)
-    _tool(tools, "schedule_device").impl(
-        {"device": "פינת אוכל", "action": "off", "time": "20:00", "days": ["mon"]})
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "off", "time": "20:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל", "time": "20:00"})
     assert "off" in out and "20:00" in out    # names the real action + time, not a guess

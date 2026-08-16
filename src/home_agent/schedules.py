@@ -81,12 +81,36 @@ def _resolve_fire_at(when, time_str, now):
 _SCHEDULE_SCHEMA = {"type": "function", "function": {
     "name": "schedule_device",
     "description": (
-        "Schedule a SwitchBot device to turn on/off (or press) at a clock time. Bluetooth devices are "
-        "programmed into the device's own timer (they fire even if this computer is off); cloud devices "
-        "(e.g. the garden) are fired by the home-agent, so it must be running. `time` is 24-hour \"HH:MM\". "
-        "Omit `days` for a ONE-TIME timer (fires at the next occurrence of that time); give `days` for "
-        "a RECURRING timer. For relative requests like 'in 5 minutes', first call get_current_time and "
-        "compute the HH:MM. Each device holds at most 5 timers. Report what you scheduled, in the user's language."
+        "Schedule a SwitchBot device to turn on/off (or press) ONCE, at a clock time on a "
+        "specific day. Bluetooth devices are programmed into the device's own timer (they fire "
+        "even if this computer is off); cloud devices (e.g. the garden) are fired by the "
+        "home-agent, so it must be running. `time` is 24-hour \"HH:MM\". `when` says which day "
+        "and is required — use \"soonest\" when the user named no day at all. Never guess a "
+        "weekday: if the user's wording does not map cleanly onto a `when` value, or asks for "
+        "more than a week ahead, ask them which day instead of choosing one. For relative "
+        "requests like 'in 5 minutes', first call get_current_time and compute the HH:MM. Each "
+        "device holds at most 5 timers. Report what you scheduled, including the date, in the "
+        "user's language."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "device": {"type": "string", "description": "Room/device name or alias, Hebrew or English."},
+        "action": {"type": "string", "enum": ["on", "off", "press"],
+                   "description": "on, off, or press; the AC only honors press."},
+        "time": {"type": "string", "description": "24-hour clock time, \"HH:MM\"."},
+        "when": {"type": "string", "enum": _WHEN_TOKENS,
+                 "description": "Which day: soonest (no day named), today, tomorrow, "
+                                "day_after_tomorrow, in_a_week, or a weekday sun..sat."},
+    }, "required": ["device", "action", "time", "when"], "additionalProperties": False},
+}}
+
+_RECURRING_SCHEMA = {"type": "function", "function": {
+    "name": "schedule_recurring_device",
+    "description": (
+        "Schedule a SwitchBot device to repeat WEEKLY on the given days. Use ONLY when the user "
+        "explicitly asked for repetition (כל יום / כל שישי / every week) — this is rare. For a "
+        "single day, even a named weekday like 'ביום שישי', use schedule_device instead. Pass "
+        "the user's own repetition words in `repetition_phrase`. Each device holds at most 5 "
+        "timers. Report what you scheduled, in the user's language."
     ),
     "parameters": {"type": "object", "properties": {
         "device": {"type": "string", "description": "Room/device name or alias, Hebrew or English."},
@@ -94,8 +118,11 @@ _SCHEDULE_SCHEMA = {"type": "function", "function": {
                    "description": "on, off, or press; the AC only honors press."},
         "time": {"type": "string", "description": "24-hour clock time, \"HH:MM\"."},
         "days": {"type": "array", "items": {"type": "string"},
-                 "description": "Any of sun mon tue wed thu fri sat, or the words daily/weekdays/weekends. Omit for a one-time timer."},
-    }, "required": ["device", "action", "time"], "additionalProperties": False},
+                 "description": "Any of sun mon tue wed thu fri sat, or daily/weekdays/weekends."},
+        "repetition_phrase": {"type": "string",
+                              "description": "The user's own words that mean repetition."},
+    }, "required": ["device", "action", "time", "days", "repetition_phrase"],
+       "additionalProperties": False},
 }}
 
 
@@ -133,8 +160,19 @@ def _expire_and_reprogram(store, registry, write_fn, now_fn):
             log.warning("could not reprogram %s after expiry: %s", device, type(e).__name__)
 
 
-def _schedule_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
-    _expire_and_reprogram(store, registry, write_fn, now_fn)
+def _describe_row(action, time_str, days, once, fire_at, now):
+    """One line per timer, always carrying the resolved calendar date for one-time rows —
+    a weekday name alone is what made the original off-by-one invisible."""
+    if not once or not fire_at:
+        return f"{action} at {time_str} — RECURRING, every {describe_days(days)}"
+    local = datetime.fromisoformat(fire_at).astimezone(now.tzinfo)
+    line = f"{action} at {time_str} on {local.date().isoformat()} ({local.strftime('%a')}) — ONE-TIME"
+    if (local.date() - now.date()).days > 6:
+        line += " — NEXT WEEK"
+    return line
+
+
+def _schedule_impl(args, *, recurring, registry, store, write_fn, now_fn, scheduler=None):
     spoken = (args.get("device") or "").strip()
     action = (args.get("action") or "").strip().lower()
     time_str = (args.get("time") or "").strip()
@@ -143,23 +181,31 @@ def _schedule_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
         return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
     if action not in ("on", "off", "press"):
         return f"unknown action '{action}'. Use on, off, or press."
+
+    _expire_and_reprogram(store, registry, write_fn, now_fn)
+    if len(store.list(name)) >= MAX_ALARMS:
+        return f"{name} already has {MAX_ALARMS} timers, which is the maximum. Cancel one first."
+
     try:
-        raw_days = args.get("days") or []
-        if raw_days:
-            days, once, fire_at = _normalize_days(raw_days), False, None
+        if recurring:
+            if not (args.get("repetition_phrase") or "").strip():
+                return ("repetition_phrase is required — if the user did not actually ask for a "
+                        "repeating timer, use schedule_device instead.")
+            days, once, fire_at, target = _normalize_days(args.get("days") or []), False, None, None
+            if not days:
+                return "give at least one day for a recurring timer."
         else:
-            target = _resolve_fire_at("soonest", time_str, now_fn())
+            target = _resolve_fire_at(args.get("when"), time_str, now_fn())
             days, once, fire_at = [_PY_WEEKDAY[target.weekday()]], True, _utc_iso(target)
     except (ValueError, AttributeError) as e:
         return f"couldn't set the timer: {e}"
-    if len(store.list(name)) >= MAX_ALARMS:
-        return (f"{name} already has {MAX_ALARMS} timers, which is the maximum. "
-                f"Cancel one first.")
+
     row_id = store.add(name, action, time_str, days, once, fire_at)
     if registry.is_cloud(name):
         try:
             scheduler.schedule_row({"id": row_id, "device": name, "action": action,
-                                    "time": time_str, "days": days, "once": once, "fire_at": fire_at})
+                                    "time": time_str, "days": days, "once": once,
+                                    "fire_at": fire_at})
         except Exception as e:
             store.remove_id(row_id)
             return f"couldn't schedule {name} ({e}) — timer not set"
@@ -170,8 +216,7 @@ def _schedule_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
             store.remove_id(row_id); return f"can't schedule that: {e}"
         except Exception as e:
             store.remove_id(row_id); return f"couldn't reach {name} — timer not set ({e})"
-    when = "one-time" if once else describe_days(days)
-    return f"{name}: {action} at {time_str} ({when}) ✅"
+    return f"{name}: {_describe_row(action, time_str, days, once, fire_at, now_fn())} ✅"
 
 
 _GET_SCHEDULE_SCHEMA = {"type": "function", "function": {
@@ -264,7 +309,12 @@ def build_schedule_tools(registry, store, *, write_fn=None, now_fn=None, schedul
     return [
         Tool(name="schedule_device", schema=_SCHEDULE_SCHEMA,
              impl=lambda args: _schedule_impl(
-                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
+                 args, recurring=False, registry=registry, store=store,
+                 write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
+        Tool(name="schedule_recurring_device", schema=_RECURRING_SCHEMA,
+             impl=lambda args: _schedule_impl(
+                 args, recurring=True, registry=registry, store=store,
+                 write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
         Tool(name="get_schedule", schema=_GET_SCHEDULE_SCHEMA,
              impl=lambda args: _get_schedule_impl(
                  args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),

@@ -26,21 +26,27 @@ def test_cloud_schedule_registers_job_not_ble(tmp_path):
         _reg(tmp_path), store,
         write_fn=lambda *a: (_ for _ in ()).throw(AssertionError("no BLE for cloud")),
         now_fn=_now, scheduler=sch)}
-    out = tools["schedule_device"].impl({"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"]})
+    out = tools["schedule_recurring_device"].impl(
+        {"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     assert sch.scheduled and "✅" in out
     assert store.list("garden")
 
 def test_cloud_schedule_rolls_back_on_scheduler_failure(tmp_path):
     store = ScheduleStore(str(tmp_path / "s.db")); sch = FakeScheduler(fail=True)
     tools = {t.name: t for t in build_schedule_tools(_reg(tmp_path), store, now_fn=_now, scheduler=sch)}
-    out = tools["schedule_device"].impl({"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"]})
+    out = tools["schedule_recurring_device"].impl(
+        {"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     assert store.list("garden") == []      # rolled back
     assert "✅" not in out
 
 def test_cloud_cancel_unschedules(tmp_path):
     store = ScheduleStore(str(tmp_path / "s.db")); sch = FakeScheduler()
     tools = {t.name: t for t in build_schedule_tools(_reg(tmp_path), store, now_fn=_now, scheduler=sch)}
-    tools["schedule_device"].impl({"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"]})
+    tools["schedule_recurring_device"].impl(
+        {"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     tools["cancel_schedule"].impl({"device": "גינה"})
     assert sch.removed and store.list("garden") == []
 
@@ -49,9 +55,11 @@ def test_cloud_device_respects_the_five_timer_cap(tmp_path):
     tools = {t.name: t for t in build_schedule_tools(
         _reg(tmp_path), store, write_fn=lambda *a: None, now_fn=_now, scheduler=sch)}
     for i in range(5):
-        tools["schedule_device"].impl(
-            {"device": "גינה", "action": "on", "time": f"0{i+1}:00", "days": ["mon"]})
-    out = tools["schedule_device"].impl(
-        {"device": "גינה", "action": "on", "time": "07:00", "days": ["mon"]})
+        tools["schedule_recurring_device"].impl(
+            {"device": "גינה", "action": "on", "time": f"0{i+1}:00", "days": ["mon"],
+             "repetition_phrase": "כל שני"})
+    out = tools["schedule_recurring_device"].impl(
+        {"device": "גינה", "action": "on", "time": "07:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
     assert "max" in out.lower() or "5" in out
     assert len(store.list("garden")) == 5

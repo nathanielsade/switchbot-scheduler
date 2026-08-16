@@ -124,7 +124,7 @@ def test_handle_message_runs_schedule_device_through_composed_tools(tmp_path, ma
     tools = list(DEFAULT_TOOLS) + sched
     client = make_fake_client([
         {"tool_calls": [{"id": "c1", "name": "schedule_device",
-                         "arguments": {"device": "פינת אוכל", "action": "on", "time": "18:00", "days": ["mon"]}}]},
+                         "arguments": {"device": "פינת אוכל", "action": "on", "time": "18:00", "when": "soonest"}}]},
         {"content": "קבעתי"},
     ])
     conv = Conversation(str(tmp_path / "m.db"))
