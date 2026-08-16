@@ -235,12 +235,16 @@ _GET_SCHEDULE_SCHEMA = {"type": "function", "function": {
 _CANCEL_SCHEMA = {"type": "function", "function": {
     "name": "cancel_schedule",
     "description": (
-        "Cancel scheduled timers. Give a device to clear all its timers, or a device + time to cancel "
-        "just that one. Reprograms the device so the cancelled timer no longer fires."
+        "Cancel timers. Device alone clears all of them; add `time`, and `when` if two timers share "
+        "a clock time on different dates. Reports the date of everything cancelled."
     ),
     "parameters": {"type": "object", "properties": {
         "device": {"type": "string", "description": "Device name or alias."},
         "time": {"type": "string", "description": "24-hour \"HH:MM\" to cancel one timer; omit to clear all for the device."},
+        "when": {"type": "string", "enum": _WHEN_TOKENS,
+                 "description": "Which day, to disambiguate two timers at the same clock time on "
+                                "different dates: soonest, today, tomorrow, day_after_tomorrow, "
+                                "in_a_week, or a weekday sun..sat. Requires `time`."},
     }, "required": ["device"], "additionalProperties": False},
 }}
 
@@ -263,32 +267,56 @@ def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
 
 
 def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
-    _expire_and_reprogram(store, registry, write_fn, now_fn)
     spoken = (args.get("device") or "").strip()
     time_str = (args.get("time") or "").strip() or None
+    when = (args.get("when") or "").strip() or None
     name = registry.resolve(spoken)
     if name is None:
         return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
-    removed_rows = [r for r in store.list(name) if time_str is None or r["time"] == time_str]
+
+    _expire_and_reprogram(store, registry, write_fn, now_fn)
+    now = now_fn()
+    target_date = None
+    if when:
+        if not time_str:
+            return "give the time too when you name a day."
+        try:
+            target_date = _resolve_fire_at(when, time_str, now).date()
+        except ValueError as e:
+            return f"couldn't cancel: {e}"
+
+    removed_rows = []
+    for r in store.list(name):
+        if time_str is not None and r["time"] != time_str:
+            continue
+        if target_date is not None:
+            # Recurring rows have no date and must never be swept up by a dated cancel.
+            if not r["once"] or not r["fire_at"]:
+                continue
+            # fire_at is UTC; compare in HOME_TZ or a 01:00-local timer lands a day early.
+            if datetime.fromisoformat(r["fire_at"]).astimezone(now.tzinfo).date() != target_date:
+                continue
+        removed_rows.append(r)
+
+    if not removed_rows:
+        return f"nothing scheduled matched for {name}."
+    for r in removed_rows:
+        store.remove_id(r["id"])
     if registry.is_cloud(name):
-        removed = store.remove(name, time_str)
-        if removed == 0:
-            return f"nothing scheduled matched for {name}."
         if scheduler is not None:
             for r in removed_rows:
                 scheduler.unschedule(r["id"])
     else:
-        removed = store.remove(name, time_str)
-        if removed == 0:
-            return f"nothing scheduled matched for {name}."
         try:
             _program_device(name, store, registry, write_fn)
         except Exception as e:
             for r in removed_rows:   # roll back so the record matches the Bot and a retry re-tries
                 store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
             return f"couldn't reprogram {name} ({e}) — timer(s) not cancelled, try again."
-    what = ", ".join(f"{r['action']} at {r['time']}" for r in removed_rows)
-    return f"{name}: cancelled {what} ✅"
+    what = "; ".join(
+        _describe_row(r["action"], r["time"], r["days"], r["once"], r["fire_at"], now)
+        for r in removed_rows)
+    return f"{name}: cancelled {len(removed_rows)} timer(s) — {what} ✅"
 
 
 def _utc_iso(dt):

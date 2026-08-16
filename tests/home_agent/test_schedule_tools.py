@@ -301,6 +301,34 @@ def test_cancel_write_failure_rolls_back(tmp_path):
     assert len(store.list("dining")) == 1     # rolled back — record intact so a retry can re-try
 
 
+def test_cancel_can_disambiguate_two_timers_at_the_same_clock_time(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "in_a_week"})
+    out = _tool(tools, "cancel_schedule").impl(
+        {"device": "פינת אוכל", "time": "18:30", "when": "tomorrow"})
+    assert "2026-08-15" in out
+    remaining = store.list("dining")
+    assert len(remaining) == 1 and remaining[0]["fire_at"].startswith("2026-08-21")
+
+
+def test_cancel_with_a_date_leaves_recurring_rows_alone(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "days": ["mon"],
+         "repetition_phrase": "כל יום שני"})
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
+    _tool(tools, "cancel_schedule").impl(
+        {"device": "פינת אוכל", "time": "18:30", "when": "tomorrow"})
+    remaining = store.list("dining")
+    assert len(remaining) == 1 and remaining[0]["once"] is False
+
+
 def test_fired_one_time_row_is_not_rearmed_by_a_later_write(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes)
