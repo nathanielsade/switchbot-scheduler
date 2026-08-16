@@ -1,4 +1,6 @@
-import json
+import json, logging
+
+log = logging.getLogger("home_agent")
 
 
 def run_turn(user_text, history, *, client, model, system, tools, max_steps=10):
@@ -33,5 +35,6 @@ def run_turn(user_text, history, *, client, model, system, tools, max_steps=10):
                 result = tool.impl(args) if tool else f"error: unknown tool {tc.function.name}"
             except Exception as e:
                 result = f"error: {e}"
+            log.info("tool %s -> %s", tc.function.name, str(result)[:120].replace("\n", " | "))
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
     return (msg.content if msg else None) or "error: exceeded max tool-call steps"
