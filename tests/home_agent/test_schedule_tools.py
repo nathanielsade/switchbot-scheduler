@@ -199,6 +199,20 @@ def test_cancel_write_failure_rolls_back(tmp_path):
     assert len(store.list("dining")) == 1     # rolled back — record intact so a retry can re-try
 
 
+def test_fired_one_time_row_is_not_rearmed_by_a_later_write(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes)
+    # a one-time row that has already fired (before the frozen clock _thu_1824)
+    store.add("dining", "on", "08:00", ["thu"], True, "2026-07-09T05:00:00+00:00")
+    # Task-4-era API: schedule_recurring_device does not exist until Task 7. This test
+    # is migrated to it there, along with the rest of the days= callers.
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "off", "time": "23:00", "days": ["mon"]})
+    assert [r["time"] for r in store.list("dining")] == ["23:00"]
+    # only the new alarm was written to the Bot, not the stale 08:00 one
+    assert len(writes[-1][1]) == 1
+
+
 def test_cancel_names_the_action_and_time_it_cancelled(tmp_path):
     # Regression: the confirmation used to omit the action, so the model called an "off" timer "on".
     writes = []

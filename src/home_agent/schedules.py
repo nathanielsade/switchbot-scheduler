@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -7,6 +8,8 @@ from switchbot_scheduler.validator import validate, ScheduleError
 from switchbot_scheduler.readback import describe_days, readback
 
 from .tools import Tool
+
+log = logging.getLogger("home_agent")
 
 _DAY_WORDS = {
     "daily": list(DAYS),
@@ -83,7 +86,21 @@ def _program_device(device, store, registry, write_fn):
     write_fn(registry.ble_id(device), alarms)
 
 
+def _expire_and_reprogram(store, registry, write_fn, now_fn):
+    """Drop fired one-time rows, and rewrite the alarm set of every BLE device that lost
+    one — clearing the store alone leaves the Bot still holding the alarm."""
+    for device in {r["device"] for r in store.remove_expired(_utc_iso(now_fn()))}:
+        if registry.resolve(device) is None or registry.is_cloud(device):
+            continue          # cloud one-time jobs self-remove in CloudScheduler._make_cb
+        try:
+            _program_device(device, store, registry, write_fn)
+        except Exception as e:
+            # An unrelated Bot's dead battery must not block the call the user made.
+            log.warning("could not reprogram %s after expiry: %s", device, type(e).__name__)
+
+
 def _schedule_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
+    _expire_and_reprogram(store, registry, write_fn, now_fn)
     spoken = (args.get("device") or "").strip()
     action = (args.get("action") or "").strip().lower()
     time_str = (args.get("time") or "").strip()
@@ -165,6 +182,7 @@ def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
 
 
 def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
+    _expire_and_reprogram(store, registry, write_fn, now_fn)
     spoken = (args.get("device") or "").strip()
     time_str = (args.get("time") or "").strip() or None
     name = registry.resolve(spoken)
