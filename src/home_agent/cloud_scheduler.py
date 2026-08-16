@@ -18,6 +18,10 @@ class CloudScheduler:
         self.now_fn = now_fn or (lambda: datetime.now(tz))
 
     def reconcile(self):
+        # Sweep expired rows without reprogramming anything: unlike a BLE Bot (see
+        # schedules._expire_and_reprogram), nothing here writes a cloud device at startup —
+        # the next schedule/cancel call rebuilds jobs from the store, so a stale store row is
+        # never left armed anywhere.
         self.store.remove_expired(self.now_fn().astimezone(_dt_timezone.utc).isoformat())
         for row in self.store.list():
             if self.registry.is_cloud(row["device"]):
