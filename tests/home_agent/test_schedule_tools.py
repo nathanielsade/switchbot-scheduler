@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from home_agent.schedules import _normalize_days, _one_time_target
+from home_agent.schedules import _normalize_days
 
 
 def _thu_1824():
@@ -21,16 +21,66 @@ def test_normalize_days_bad_day_raises():
         _normalize_days(["funday"])
 
 
-def test_one_time_target_today_when_time_ahead():
-    day, fire_at = _one_time_target("18:29", _thu_1824())
-    assert day == "thu"
-    assert fire_at.startswith("2026-07-09T18:29")
+from zoneinfo import ZoneInfo
+from home_agent.schedules import _resolve_fire_at
+
+_TZ = ZoneInfo("Asia/Jerusalem")
 
 
-def test_one_time_target_rolls_to_next_day_when_past():
-    day, fire_at = _one_time_target("18:00", _thu_1824())   # already past 18:24
-    assert day == "fri"
-    assert fire_at.startswith("2026-07-10T18:00")
+def _fri_1721():
+    # Friday 2026-08-14 17:21 local — the exact moment of the reported bug
+    return datetime(2026, 8, 14, 17, 21, tzinfo=_TZ)
+
+
+def test_tomorrow_never_resolves_to_today():
+    got = _resolve_fire_at("tomorrow", "18:30", _fri_1721())
+    assert got.date().isoformat() == "2026-08-15"      # Saturday, not Friday
+
+
+def test_soonest_is_today_when_ahead_and_tomorrow_when_passed():
+    assert _resolve_fire_at("soonest", "18:30", _fri_1721()).date().isoformat() == "2026-08-14"
+    late = datetime(2026, 8, 14, 19, 0, tzinfo=_TZ)
+    assert _resolve_fire_at("soonest", "18:30", late).date().isoformat() == "2026-08-15"
+
+
+def test_today_errors_when_the_time_has_passed():
+    import pytest
+    late = datetime(2026, 8, 14, 19, 0, tzinfo=_TZ)
+    with pytest.raises(ValueError):
+        _resolve_fire_at("today", "18:30", late)
+
+
+def test_weekday_counts_today_only_when_the_time_is_ahead():
+    # today IS Friday
+    assert _resolve_fire_at("fri", "18:30", _fri_1721()).date().isoformat() == "2026-08-14"
+    late = datetime(2026, 8, 14, 19, 0, tzinfo=_TZ)
+    assert _resolve_fire_at("fri", "18:30", late).date().isoformat() == "2026-08-21"
+
+
+def test_day_after_tomorrow_and_in_a_week():
+    assert _resolve_fire_at("day_after_tomorrow", "18:30", _fri_1721()).date().isoformat() == "2026-08-16"
+    assert _resolve_fire_at("in_a_week", "18:30", _fri_1721()).date().isoformat() == "2026-08-21"
+
+
+def test_unknown_token_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        _resolve_fire_at("friday", "18:30", _fri_1721())
+
+
+def test_resolution_survives_the_dst_boundary():
+    # Israel ends DST overnight 2026-10-24/25. "tomorrow 18:30" must be 18:30 WALL CLOCK
+    # on the 25th, not 17:30 — which is what fixed-offset arithmetic would produce.
+    from datetime import timedelta
+    before = datetime(2026, 10, 24, 12, 0, tzinfo=_TZ)
+    got = _resolve_fire_at("tomorrow", "18:30", before)
+    assert got.date().isoformat() == "2026-10-25"
+    assert (got.hour, got.minute) == (18, 30)
+    # Assert the INSTANT, not just the wall clock: the wall-clock assertion above holds for
+    # any plausible implementation (ZoneInfo recomputes the offset even for timedelta
+    # arithmetic), so only the offset actually distinguishes correct from wrong here.
+    assert got.utcoffset() == timedelta(hours=2)      # DST has ended by the 25th
+    assert before.utcoffset() == timedelta(hours=3)   # it had not on the 24th
 
 
 from switchbot_scheduler.registry import Registry, Device

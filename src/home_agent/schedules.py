@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as _dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from switchbot_scheduler.model import DAYS, Event, DeviceSchedule, Schedule
@@ -34,14 +34,48 @@ def _normalize_days(days):
     return [d for d in DAYS if d in seen]
 
 
-def _one_time_target(time_str, now):
-    """(weekday_name, fire_at_iso) of the next occurrence of HH:MM from `now`
-    (today if still ahead, else tomorrow)."""
+# Fixed day offsets. "soonest" is conditional, so it is handled separately.
+_WHEN_OFFSETS = {"today": 0, "tomorrow": 1, "day_after_tomorrow": 2, "in_a_week": 7}
+_WHEN_TOKENS = ["soonest", *_WHEN_OFFSETS, *DAYS]
+
+
+def _resolve_fire_at(when, time_str, now):
+    """Resolve a `when` token to a tz-aware datetime in `now`'s zone.
+
+    All date arithmetic lives here, never in the model: the model maps language to a
+    token ("מחר" -> "tomorrow") and nothing else. Built from date+time+tzinfo rather
+    than timedelta on an aware value, so a target across a DST boundary keeps its
+    wall-clock time.
+    """
+    key = str(when or "").strip()
+    if key not in _WHEN_TOKENS:
+        raise ValueError(f"unknown when '{when}'. Use one of: {', '.join(_WHEN_TOKENS)}")
     hh, mm = (int(x) for x in time_str.split(":"))
-    target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    tz = now.tzinfo
+
+    def at(d):
+        return datetime.combine(d, _dtime(hh, mm), tzinfo=tz)
+
+    if key == "soonest":
+        target = at(now.date())
+        return target if target > now else at(now.date() + timedelta(days=1))
+
+    if key in _WHEN_OFFSETS:
+        target = at(now.date() + timedelta(days=_WHEN_OFFSETS[key]))
+        if key == "today" and target <= now:
+            raise ValueError(
+                f"{time_str} already passed today. If the user did not explicitly say "
+                f"today, retry with when=soonest or when=tomorrow")
+        return target
+
+    # a weekday name: nearest occurrence, today counting only if the time is still ahead
+    target_idx = DAYS.index(key)
+    now_idx = (now.weekday() + 1) % 7          # python Mon=0 -> our sun=0 indexing
+    delta = (target_idx - now_idx) % 7
+    target = at(now.date() + timedelta(days=delta))
     if target <= now:
-        target = target + timedelta(days=1)
-    return _PY_WEEKDAY[target.weekday()], target.isoformat()
+        target = at(now.date() + timedelta(days=delta + 7))
+    return target
 
 
 _SCHEDULE_SCHEMA = {"type": "function", "function": {
@@ -114,8 +148,8 @@ def _schedule_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
         if raw_days:
             days, once, fire_at = _normalize_days(raw_days), False, None
         else:
-            day, fire_at = _one_time_target(time_str, now_fn())
-            days, once = [day], True
+            target = _resolve_fire_at("soonest", time_str, now_fn())
+            days, once, fire_at = [_PY_WEEKDAY[target.weekday()]], True, _utc_iso(target)
     except (ValueError, AttributeError) as e:
         return f"couldn't set the timer: {e}"
     if len(store.list(name)) >= MAX_ALARMS:
