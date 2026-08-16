@@ -27,7 +27,13 @@ def test_run_turn_sends_identical_system_prompt_each_turn(make_fake_client):
 
 def test_prompt_carries_the_scheduling_rules():
     p = FAMILY_SYSTEM_PROMPT
-    assert "one-time" in p.lower()
+    # Rule (a): device timers are one-time by default
+    assert "Device timers are one-time by default" in p
+    # Rule (a): use schedule_recurring_device only when user explicitly asked
     assert "schedule_recurring_device" in p
-    assert "date" in p.lower()
-    assert not any(ch.isdigit() for ch in p)      # still digit-free
+    # Rule (b): always state the calendar date the tool returned
+    assert "always state the calendar date the tool returned" in p
+    # Rule (c): never claim untested success
+    assert "unless the tool call actually returned success" in p
+    # Maintains: still digit-free
+    assert not any(ch.isdigit() for ch in p)
