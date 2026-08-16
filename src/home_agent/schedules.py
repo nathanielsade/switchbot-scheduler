@@ -180,20 +180,24 @@ def _expire_and_reprogram(store, registry, write_fn, now_fn):
     for device in {r["device"] for r in store.remove_expired(_utc_iso(now_fn()))}:
         if registry.resolve(device) is None or registry.is_cloud(device):
             continue          # cloud one-time jobs self-remove in CloudScheduler._make_cb
-        row_ids = [r["id"] for r in store.list(device)]
+        row_ids = "?"
         try:
+            row_ids = [r["id"] for r in store.list(device)]
             _program_device(device, store, registry, write_fn, now_fn)
         except ScheduleError:
-            # A validation/coding bug on THIS device, not an unreachable Bot — but an unrelated
-            # device's bad row must never fail the call the user actually made (that would let
-            # one broken Bot block all scheduling). Log loudly and distinctly so this is found,
-            # without raising.
+            # ScheduleError reliably means a validation/coding bug on THIS device, not an
+            # unreachable Bot — but an unrelated device's bad row must never fail the call the
+            # user actually made (that would let one broken Bot block all scheduling). Log
+            # loudly and distinctly, with a traceback, so this is found without raising.
             log.error("BUG: reprogramming %s (rows=%s) after expiry failed validation — this is "
                       "a validation/coding bug, not an unreachable Bot", device, row_ids, exc_info=True)
         except Exception:
-            # An unrelated Bot's dead battery must not block the call the user made — but log
-            # with the traceback + which device/rows, so a genuine coding defect (KeyError,
-            # AttributeError, TypeError…) is distinguishable from a routine offline device.
+            # Everything else — a routine offline/dead-battery Bot, but also possibly a genuine
+            # code/data defect (e.g. ValueError/TypeError from encode_alarm or Event on an
+            # out-of-range hour or corrupt field) that isn't a ScheduleError. Either way this
+            # must not block the call the user made, so log with a traceback + which
+            # device/rows and move on; the traceback is what lets a real defect be told apart
+            # from a routine offline device after the fact.
             log.warning("could not reprogram %s (rows=%s) after expiry", device, row_ids, exc_info=True)
 
 

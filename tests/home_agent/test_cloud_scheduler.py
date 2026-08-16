@@ -179,6 +179,30 @@ def test_reconcile_stays_quiet_for_the_expected_already_past_case(tmp_path, capl
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
+def test_reconcile_survives_a_non_valueerror_from_schedule_row(tmp_path, caplog):
+    # G1: a corrupt row can make schedule_row raise something other than ValueError (e.g. a
+    # KeyError for a row missing time/days/fire_at, or whatever run_once/run_daily raises for a
+    # bad value). reconcile() runs UNGUARDED at startup for every cloud device, so one such row
+    # must never abort the sweep and take the rest of cloud scheduling down with it.
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    bad_id = store.add("garden", "on", "18:00", ["thu"], False, None)
+    good_id = store.add("garden", "on", "07:00", ["mon"], False, None)
+
+    real_schedule_row = cs.schedule_row
+    def flaky_schedule_row(row):
+        if row["id"] == bad_id:
+            raise KeyError("time")
+        return real_schedule_row(row)
+    cs.schedule_row = flaky_schedule_row
+
+    with caplog.at_level("WARNING"):
+        cs.reconcile()                                 # must not raise
+
+    assert [j.name for j in jq.jobs] == [f"switchbot-cloud:{good_id}"]  # good row still scheduled
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(str(bad_id) in r.getMessage() for r in warnings)
+
+
 def test_reconcile_skips_past_rows_without_raising(tmp_path):
     jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
     # fire_at EXACTLY equal to now: remove_expired's strict "<" keeps the row, so it really

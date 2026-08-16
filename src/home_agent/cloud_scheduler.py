@@ -41,6 +41,15 @@ class CloudScheduler:
                         log.warning("reconcile: skipping corrupt schedule row id=%s (%s): %s",
                                     row.get("id"), row, e)
                     continue
+                except Exception:
+                    # Anything else (KeyError from a row missing `time`/`days`/`fire_at`,
+                    # whatever job_queue.run_once/run_daily raises for a bad value, ...) must
+                    # not abort the sweep either: this loop runs UNGUARDED at startup, and every
+                    # cloud device on the live box is reconciled by this SAME call, so one
+                    # corrupt row must never disable scheduling for the rest of them.
+                    log.warning("reconcile: skipping corrupt schedule row id=%s (%s)",
+                                row.get("id"), row, exc_info=True)
+                    continue
 
     def schedule_row(self, row):
         name = _job_name(row["id"])

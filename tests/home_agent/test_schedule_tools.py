@@ -132,6 +132,39 @@ def test_expiry_reprogram_bug_on_one_device_does_not_block_scheduling_another(tm
     assert any(bid == "ID3" for bid, _alarms in writes)  # and WAS written to dining's Bot
 
 
+def test_expiry_reprogram_survives_store_list_failure_for_row_ids(tmp_path):
+    # G2: the row_ids lookup (`store.list(device)`, used only for logging) must be guarded like
+    # the rest of _expire_and_reprogram's per-device body — a DB-level failure there (locked
+    # file, I/O error) must not escape and fail the caller's own unrelated request.
+    from home_agent.schedule_store import ScheduleStore
+    from home_agent.schedules import _utc_iso
+
+    class FlakyStore(ScheduleStore):
+        def list(self, device=None):
+            if device == "living_room":
+                raise RuntimeError("db is locked")
+            return super().list(device)
+
+    writes = []
+    store = FlakyStore(str(tmp_path / "s.db"))
+    tools = build_schedule_tools(
+        _registry(), store,
+        write_fn=lambda ble_id, alarms: writes.append((ble_id, alarms)),
+        now_fn=_thu_1824)
+
+    # living_room: an already-fired one-time row, so it's in _expire_and_reprogram's "devices
+    # that lost a row" set and hits the flaky store.list(device) call.
+    store.add("living_room", "on", "18:00", ["mon"], True,
+              _utc_iso(datetime(2026, 7, 1, 18, 0, tzinfo=timezone.utc)))
+
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "dining", "action": "on", "time": "19:00", "when": "tomorrow"})
+
+    assert "✅" in out
+    assert store.list("dining")                          # dining's timer WAS stored
+    assert any(bid == "ID3" for bid, _alarms in writes)   # and WAS written to dining's Bot
+
+
 def test_schedule_device_has_no_days_property(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes, now=_fri_1721)
