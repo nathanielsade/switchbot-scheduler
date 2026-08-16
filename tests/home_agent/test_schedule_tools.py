@@ -305,16 +305,16 @@ def test_cancel_write_failure_rolls_back(tmp_path):
 
 def test_cancel_can_disambiguate_two_timers_at_the_same_clock_time(tmp_path):
     writes = []
-    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)     # 2026-08-14 17:21, before 18:30
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "today"})
     _tool(tools, "schedule_device").impl(
         {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
-    _tool(tools, "schedule_device").impl(
-        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "in_a_week"})
     out = _tool(tools, "cancel_schedule").impl(
         {"device": "פינת אוכל", "time": "18:30", "when": "tomorrow"})
     assert "2026-08-15" in out
     remaining = store.list("dining")
-    assert len(remaining) == 1 and remaining[0]["fire_at"].startswith("2026-08-21")
+    assert len(remaining) == 1 and remaining[0]["fire_at"].startswith("2026-08-14")
 
 
 def test_cancel_with_a_date_leaves_recurring_rows_alone(tmp_path):
@@ -363,12 +363,37 @@ def test_one_time_confirmation_states_the_date(tmp_path):
     assert "2026-08-15" in out and "Sat" in out and "ONE-TIME" in out
 
 
-def test_a_week_out_is_flagged(tmp_path):
+def test_a_week_out_is_refused_for_ble(tmp_path):
+    # I1 regression: a BLE one-time row has no date on the wire, so a row more than a day
+    # out risks firing tonight under the unfavourable once-bit reading — and in_a_week
+    # resolves to today's own weekday, which is exactly the case that must be refused.
     writes = []
     tools, store = _tools(tmp_path, writes, now=_fri_1721)
     out = _tool(tools, "schedule_device").impl(
         {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "in_a_week"})
-    assert "2026-08-21" in out and "NEXT WEEK" in out
+    assert "✅" not in out and "day" in out.lower()
+    assert store.list("dining") == []          # nothing left behind
+    assert writes == []
+
+
+def test_two_days_out_is_refused_for_ble_and_nothing_persists(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "day_after_tomorrow"})
+    assert "✅" not in out
+    assert store.list("dining") == []
+    assert writes == []
+
+
+def test_tomorrow_still_works_for_ble(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
+    assert "✅" in out
+    assert store.list("dining")[0]["fire_at"].startswith("2026-08-15")
+    assert writes and len(writes[-1][1]) == 1
 
 
 def test_get_schedule_lists_dates_and_marks_recurring(tmp_path):

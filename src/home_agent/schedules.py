@@ -132,9 +132,27 @@ def _program_bot(ble_id, alarms):
     asyncio.run(write_alarms(ble_id, alarms))
 
 
-def _program_device(device, store, registry, write_fn):
-    """Rebuild `device`'s full alarm set from the store and write it to the Bot (empty list clears it)."""
+def _program_device(device, store, registry, write_fn, now_fn):
+    """Rebuild `device`'s full alarm set from the store and write it to the Bot (empty list clears it).
+
+    A BLE one-time row encodes only (weekday, HH:MM, once-bit) — the wire format carries no date.
+    Whether the firmware fires it "on that weekday" or "at the next HH:MM, then deletes" is
+    unverified, so under the unfavourable reading a row set for more than a day out would fire
+    tonight instead — the original bug. Refuse those here until the firmware behaviour is
+    confirmed (a hardware spike). Cloud-routed devices never reach this function (callers route
+    them through the scheduler instead), so they are unaffected."""
     rows = store.list(device)
+    now = now_fn()
+    for r in rows:
+        if r["once"] and r["fire_at"]:
+            fire_at = datetime.fromisoformat(r["fire_at"]).astimezone(now.tzinfo)
+            if (fire_at.date() - now.date()).days > 1:
+                raise ScheduleError(
+                    f"{device}: Bluetooth devices can only hold a one-time timer up to a day "
+                    f"ahead — the firmware's once-bit behaviour for anything further out isn't "
+                    f"verified yet, and it could fire tonight instead of on "
+                    f"{fire_at.date().isoformat()}. Use a recurring timer, or pick a nearer day."
+                )
     events = [Event(r["time"], r["action"], r["days"], r["once"]) for r in rows]
     if events:
         validate(Schedule([DeviceSchedule(device, events)]), registry)
@@ -154,7 +172,7 @@ def _expire_and_reprogram(store, registry, write_fn, now_fn):
         if registry.resolve(device) is None or registry.is_cloud(device):
             continue          # cloud one-time jobs self-remove in CloudScheduler._make_cb
         try:
-            _program_device(device, store, registry, write_fn)
+            _program_device(device, store, registry, write_fn, now_fn)
         except Exception as e:
             # An unrelated Bot's dead battery must not block the call the user made.
             log.warning("could not reprogram %s after expiry: %s", device, type(e).__name__)
@@ -211,7 +229,7 @@ def _schedule_impl(args, *, recurring, registry, store, write_fn, now_fn, schedu
             return f"couldn't schedule {name} ({e}) — timer not set"
     else:
         try:
-            _program_device(name, store, registry, write_fn)
+            _program_device(name, store, registry, write_fn, now_fn)
         except ScheduleError as e:
             store.remove_id(row_id); return f"can't schedule that: {e}"
         except Exception as e:
@@ -249,7 +267,7 @@ _CANCEL_SCHEMA = {"type": "function", "function": {
 }}
 
 
-def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
+def _get_schedule_impl(args, *, registry, store, now_fn):
     spoken = (args.get("device") or "").strip()
     device = None
     if spoken:
@@ -304,11 +322,16 @@ def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
         store.remove_id(r["id"])
     if registry.is_cloud(name):
         if scheduler is not None:
-            for r in removed_rows:
-                scheduler.unschedule(r["id"])
+            try:
+                for r in removed_rows:
+                    scheduler.unschedule(r["id"])
+            except Exception as e:
+                for r in removed_rows:   # symmetric with the BLE branch below: keep the record
+                    store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
+                return f"couldn't unschedule {name} ({e}) — timer(s) not cancelled, try again."
     else:
         try:
-            _program_device(name, store, registry, write_fn)
+            _program_device(name, store, registry, write_fn, now_fn)
         except Exception as e:
             for r in removed_rows:   # roll back so the record matches the Bot and a retry re-tries
                 store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
@@ -344,7 +367,7 @@ def build_schedule_tools(registry, store, *, write_fn=None, now_fn=None, schedul
                  write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
         Tool(name="get_schedule", schema=_GET_SCHEDULE_SCHEMA,
              impl=lambda args: _get_schedule_impl(
-                 args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn)),
+                 args, registry=registry, store=store, now_fn=now_fn)),
         Tool(name="cancel_schedule", schema=_CANCEL_SCHEMA,
              impl=lambda args: _cancel_impl(
                  args, registry=registry, store=store, write_fn=write_fn, now_fn=now_fn, scheduler=scheduler)),
