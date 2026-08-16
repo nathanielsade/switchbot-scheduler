@@ -323,3 +323,32 @@ def test_cancel_names_the_action_and_time_it_cancelled(tmp_path):
          "repetition_phrase": "כל שני"})
     out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל", "time": "20:00"})
     assert "off" in out and "20:00" in out    # names the real action + time, not a guess
+
+
+def test_one_time_confirmation_states_the_date(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
+    assert "2026-08-15" in out and "Sat" in out and "ONE-TIME" in out
+
+
+def test_a_week_out_is_flagged(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "in_a_week"})
+    assert "2026-08-21" in out and "NEXT WEEK" in out
+
+
+def test_get_schedule_lists_dates_and_marks_recurring(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30", "when": "tomorrow"})
+    _tool(tools, "schedule_recurring_device").impl(
+        {"device": "סלון", "action": "on", "time": "07:00", "days": ["mon"],
+         "repetition_phrase": "כל יום שני"})
+    out = _tool(tools, "get_schedule").impl({})
+    assert "2026-08-15" in out and "ONE-TIME" in out
+    assert "RECURRING" in out

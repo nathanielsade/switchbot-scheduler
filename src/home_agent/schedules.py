@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from switchbot_scheduler.model import DAYS, Event, DeviceSchedule, Schedule
 from switchbot_scheduler.encoder import encode_alarm
 from switchbot_scheduler.validator import validate, ScheduleError, MAX_ALARMS
-from switchbot_scheduler.readback import describe_days, readback
+from switchbot_scheduler.readback import describe_days
 
 from .tools import Tool
 
@@ -256,11 +256,10 @@ def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
     rows = store.list(device)
     if not rows:
         return "nothing scheduled" if device is None else f"{device}: nothing scheduled"
-    by_dev = {}
-    for r in rows:
-        by_dev.setdefault(r["device"], []).append(
-            Event(r["time"], r["action"], r["days"], r["once"]))
-    return readback(Schedule([DeviceSchedule(d, evs) for d, evs in by_dev.items()]))
+    now = now_fn()
+    return "\n".join(
+        f"{r['device']}: {_describe_row(r['action'], r['time'], r['days'], r['once'], r['fire_at'], now)}"
+        for r in rows)
 
 
 def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
