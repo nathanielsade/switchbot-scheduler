@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 from home_agent.schedules import _normalize_days
+from home_agent.agent import run_turn
+from home_agent.prompts import FAMILY_SYSTEM_PROMPT
 
 
 def _thu_1824():
@@ -380,3 +382,84 @@ def test_get_schedule_lists_dates_and_marks_recurring(tmp_path):
     out = _tool(tools, "get_schedule").impl({})
     assert "2026-08-15" in out and "ONE-TIME" in out
     assert "RECURRING" in out
+
+
+def test_model_reaches_for_the_one_time_tool_on_a_named_weekday(tmp_path, make_fake_client):
+    """The incident's exact wrong turn: 'ביום שישי' must not become a weekly timer."""
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "schedule_device",
+                         "arguments": {"device": "סלון", "action": "on", "time": "18:30",
+                                       "when": "sat"}}]},
+        {"content": "קבעתי להדלקה בשבת בשעה 18:30, פעם אחת."},
+    ])
+    writes = []
+    tools, _store = _tools(tmp_path, writes, now=_fri_1721)
+    run_turn("תדליק את האור בשבת ב-18:30", [], client=client, model="gpt-4o",
+             system=FAMILY_SYSTEM_PROMPT, tools=tools)
+    sent_tools = {t["function"]["name"] for t in client._calls[0]["tools"]}
+    assert "schedule_recurring_device" in sent_tools               # it WAS available
+    tool_msgs = [m for m in client._calls[-1]["messages"] if m.get("role") == "tool"]
+    assert tool_msgs, "the model made no tool call"
+    assert all("RECURRING" not in m["content"] for m in tool_msgs)
+
+
+def test_model_states_the_date_in_its_reply(tmp_path, make_fake_client):
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "schedule_device",
+                         "arguments": {"device": "פינת אוכל", "action": "on",
+                                       "time": "18:30", "when": "tomorrow"}}]},
+        {"content": "תזמנתי למחר, 2026-08-15, בשעה 18:30."},
+    ])
+    writes = []
+    tools, _store = _tools(tmp_path, writes, now=_fri_1721)
+    reply = run_turn("תזמן את האור למחר ב-18:30", [], client=client, model="gpt-4o",
+                     system=FAMILY_SYSTEM_PROMPT, tools=tools)
+    assert "2026-08-15" in reply
+    # and the tool result the model was given carried that date in the first place
+    tool_msg = [m for m in client._calls[-1]["messages"] if m.get("role") == "tool"][0]
+    assert "2026-08-15" in tool_msg["content"]
+
+
+def test_several_devices_in_one_turn(tmp_path):
+    """The real request was four devices at once (this registry has three); a partial
+    failure must not half-apply."""
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    for dev in ["סלון", "פינת אוכל", "מזגן"]:
+        out = _tool(tools, "schedule_device").impl(
+            {"device": dev, "action": "on", "time": "18:30", "when": "tomorrow"})
+        assert "✅" in out and "2026-08-15" in out
+    assert all(r["fire_at"].startswith("2026-08-15") for r in store.list())
+
+
+def test_tomorrow_is_stable_across_midnight(tmp_path):
+    from datetime import datetime
+    late = lambda: datetime(2026, 8, 14, 23, 0, tzinfo=_TZ)
+    early = lambda: datetime(2026, 8, 15, 1, 0, tzinfo=_TZ)
+    assert _resolve_fire_at("tomorrow", "18:30", late()).date().isoformat() == "2026-08-15"
+    assert _resolve_fire_at("tomorrow", "18:30", early()).date().isoformat() == "2026-08-16"
+
+
+def test_missing_when_errors_and_stores_nothing(tmp_path):
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "18:30"})
+    assert "when" in out.lower()
+    assert store.list() == []
+
+
+def test_tool_error_is_fed_back_to_the_model(tmp_path, make_fake_client):
+    """A rejected call must come back as a tool message the model can recover from."""
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "schedule_device",
+                         "arguments": {"device": "פינת אוכל", "action": "on",
+                                       "time": "18:30", "when": "friday"}}]},
+        {"content": "לא הצלחתי, אנסה שוב"},
+    ])
+    writes = []
+    tools, _store = _tools(tmp_path, writes, now=_fri_1721)
+    run_turn("תזמן משהו", [], client=client, model="gpt-4o",
+             system=FAMILY_SYSTEM_PROMPT, tools=tools)
+    tool_msg = [m for m in client._calls[-1]["messages"] if m.get("role") == "tool"][0]
+    assert "unknown when" in tool_msg["content"]      # strict enum: "friday" is rejected
