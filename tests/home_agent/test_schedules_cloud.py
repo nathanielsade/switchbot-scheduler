@@ -43,3 +43,15 @@ def test_cloud_cancel_unschedules(tmp_path):
     tools["schedule_device"].impl({"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"]})
     tools["cancel_schedule"].impl({"device": "גינה"})
     assert sch.removed and store.list("garden") == []
+
+def test_cloud_device_respects_the_five_timer_cap(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.db")); sch = FakeScheduler()
+    tools = {t.name: t for t in build_schedule_tools(
+        _reg(tmp_path), store, write_fn=lambda *a: None, now_fn=_now, scheduler=sch)}
+    for i in range(5):
+        tools["schedule_device"].impl(
+            {"device": "גינה", "action": "on", "time": f"0{i+1}:00", "days": ["mon"]})
+    out = tools["schedule_device"].impl(
+        {"device": "גינה", "action": "on", "time": "07:00", "days": ["mon"]})
+    assert "max" in out.lower() or "5" in out
+    assert len(store.list("garden")) == 5

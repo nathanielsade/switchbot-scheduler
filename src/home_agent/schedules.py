@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 from switchbot_scheduler.model import DAYS, Event, DeviceSchedule, Schedule
 from switchbot_scheduler.encoder import encode_alarm
-from switchbot_scheduler.validator import validate, ScheduleError
+from switchbot_scheduler.validator import validate, ScheduleError, MAX_ALARMS
 from switchbot_scheduler.readback import describe_days, readback
 
 from .tools import Tool
@@ -118,6 +118,9 @@ def _schedule_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
             days, once = [day], True
     except (ValueError, AttributeError) as e:
         return f"couldn't set the timer: {e}"
+    if len(store.list(name)) >= MAX_ALARMS:
+        return (f"{name} already has {MAX_ALARMS} timers, which is the maximum. "
+                f"Cancel one first.")
     row_id = store.add(name, action, time_str, days, once, fire_at)
     if registry.is_cloud(name):
         try:
