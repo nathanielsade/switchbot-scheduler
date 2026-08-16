@@ -23,3 +23,11 @@ def test_run_turn_sends_identical_system_prompt_each_turn(make_fake_client):
     sys2 = client._calls[1]["messages"][0]
     assert sys1 == {"role": "system", "content": FAMILY_SYSTEM_PROMPT}
     assert sys1 == sys2  # byte-identical → OpenAI auto-cache can hit
+
+
+def test_prompt_carries_the_scheduling_rules():
+    p = FAMILY_SYSTEM_PROMPT
+    assert "one-time" in p.lower()
+    assert "schedule_recurring_device" in p
+    assert "date" in p.lower()
+    assert not any(ch.isdigit() for ch in p)      # still digit-free
