@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram.constants import ChatAction
 from telegram.ext import Application, MessageHandler, filters
@@ -20,7 +22,7 @@ from .schedule_store import ScheduleStore
 from .schedules import build_schedule_tools
 from .shopping import build_shopping_tools
 from .shopping_store import ShoppingStore
-from .tools import DEFAULT_TOOLS
+from .tools import DEFAULT_TOOLS, build_time_tools
 
 log = logging.getLogger("home_agent")
 
@@ -108,7 +110,6 @@ def build_application(config, *, client=None, conversation=None):
     # SwitchBot Cloud seams for out-of-BLE-range devices (e.g. the garden). None -> cloud disabled.
     cloud_send_fn = cloud_battery_fn = scheduler = None
     if config.switchbot_token and config.switchbot_secret:
-        from zoneinfo import ZoneInfo
         from . import switchbot_cloud
         from .cloud_scheduler import CloudScheduler
         _tok, _sec = config.switchbot_token, config.switchbot_secret
@@ -120,11 +121,13 @@ def build_application(config, *, client=None, conversation=None):
     elif registry is not None and any(registry.is_cloud(n) for n in registry.known_names()):
         log.warning("SWITCHBOT_TOKEN/SECRET unset — cloud devices (e.g. garden) disabled")
 
-    tools = list(DEFAULT_TOOLS)
+    tools = list(build_time_tools(ZoneInfo(config.home_tz)))
     tools += build_shopping_tools(ShoppingStore(config.db_path))
     if registry is not None:
         tools += build_home_tools(registry, cloud_send_fn=cloud_send_fn, cloud_battery_fn=cloud_battery_fn)
-        tools += build_schedule_tools(registry, ScheduleStore(config.db_path), scheduler=scheduler)
+        tools += build_schedule_tools(
+            registry, ScheduleStore(config.db_path), scheduler=scheduler,
+            now_fn=lambda: datetime.now(ZoneInfo(config.home_tz)))
     else:
         log.warning("devices file not found at %s — home control + scheduling disabled", config.devices_path)
     rr_client = load_roborock_client(config)
@@ -132,7 +135,6 @@ def build_application(config, *, client=None, conversation=None):
         tools += build_roborock_tools(rr_client, load_room_registry(config))
     if finance_configured(config):
         from datetime import time as dtime
-        from zoneinfo import ZoneInfo
         fetch_fns = {"discount": make_collector_fetch(config, "discount")}
         if max_configured(config):
             fetch_fns["max"] = make_collector_fetch(config, "max")

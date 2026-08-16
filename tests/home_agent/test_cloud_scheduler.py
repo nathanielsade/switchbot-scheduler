@@ -40,14 +40,14 @@ def test_reconcile_registers_only_cloud_recurring(tmp_path):
 
 def test_reconcile_drops_expired_one_time(tmp_path):
     jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
-    store.add("garden", "on", "09:00", ["thu"], True, "2026-07-16T09:00:00+03:00")  # past
+    store.add("garden", "on", "09:00", ["thu"], True, "2026-07-16T06:00:00+00:00")  # past
     cs.reconcile()
     assert jq.jobs == []                    # not fired late
     assert store.list("garden") == []       # dropped
 
 def test_reconcile_registers_future_one_time(tmp_path):
     jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
-    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T18:00:00+03:00")  # future
+    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T15:00:00+00:00")  # future
     cs.reconcile()
     assert [j.name for j in jq.jobs] == [f"switchbot-cloud:{rid}"]
 
@@ -66,7 +66,7 @@ def test_one_time_fire_sends_command_and_removes_row(tmp_path):
     cs = CloudScheduler(jq, store, _reg(tmp_path),
                         send_command_fn=record_send, tz=TZ, now_fn=lambda: NOW)
 
-    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T18:00:00+03:00")
+    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T15:00:00+00:00")
     row = store.list("garden")[0]
     cs.schedule_row(row)
 
@@ -84,7 +84,7 @@ def test_one_time_fire_removes_row_even_when_send_fails(tmp_path):
     cs = CloudScheduler(jq, store, _reg(tmp_path),
                         send_command_fn=failing_send, tz=TZ, now_fn=lambda: NOW)
 
-    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T18:00:00+03:00")
+    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T15:00:00+00:00")
     row = store.list("garden")[0]
     cs.schedule_row(row)
 

@@ -1,5 +1,5 @@
 import asyncio, logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone as _dt_timezone
 from switchbot_scheduler.actuator import resolve_action
 from . import switchbot_cloud
 
@@ -18,7 +18,7 @@ class CloudScheduler:
         self.now_fn = now_fn or (lambda: datetime.now(tz))
 
     def reconcile(self):
-        self.store.remove_expired(self.now_fn().isoformat())
+        self.store.remove_expired(self.now_fn().astimezone(_dt_timezone.utc).isoformat())
         for row in self.store.list():
             if self.registry.is_cloud(row["device"]):
                 self.schedule_row(row)

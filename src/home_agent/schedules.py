@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from switchbot_scheduler.model import DAYS, Event, DeviceSchedule, Schedule
 from switchbot_scheduler.encoder import encode_alarm
@@ -152,7 +153,7 @@ def _get_schedule_impl(args, *, registry, store, write_fn, now_fn):
         device = registry.resolve(spoken)
         if device is None:
             return f"unknown device '{spoken}'. I can control: {', '.join(registry.known_names())}"
-    store.remove_expired(now_fn().isoformat())      # drop fired one-time timers from the record
+    store.remove_expired(_utc_iso(now_fn()))      # drop fired one-time timers from the record
     rows = store.list(device)
     if not rows:
         return "nothing scheduled" if device is None else f"{device}: nothing scheduled"
@@ -191,8 +192,15 @@ def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
     return f"{name}: cancelled {what} ✅"
 
 
+def _utc_iso(dt):
+    """UTC ISO for storage and for every remove_expired comparison."""
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def _now():
-    return datetime.now().astimezone()
+    # ZoneInfo, not .astimezone(): the latter yields a FIXED-OFFSET tzinfo, which is exactly
+    # what _resolve_fire_at must not build dates from. Production injects now_fn from config.
+    return datetime.now(ZoneInfo("Asia/Jerusalem"))
 
 
 def build_schedule_tools(registry, store, *, write_fn=None, now_fn=None, scheduler=None):
