@@ -110,6 +110,28 @@ def _tools(tmp_path, writes, now=None):
         now_fn=(now or _thu_1824)), store
 
 
+def test_expiry_reprogram_bug_on_one_device_does_not_block_scheduling_another(tmp_path):
+    # F3 follow-up: _expire_and_reprogram must NEVER let a validation/coding bug on an unrelated
+    # device (living_room) abort the call the user actually made (scheduling dining) — it runs at
+    # the top of _schedule_impl, before dining's own try/except, so a propagating ScheduleError
+    # here would fail dining's request too.
+    from home_agent.schedules import _utc_iso
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_thu_1824)
+
+    # living_room: one already-fired one-time row (so it's in the "devices that lost a row" set)
+    # plus a corrupt recurring row (bad time) that survives expiry and blows up validate().
+    store.add("living_room", "on", "18:00", ["mon"], True, _utc_iso(datetime(2026, 7, 1, 18, 0, tzinfo=timezone.utc)))
+    store.add("living_room", "on", "99:99", ["mon"], False, None)  # corrupt: bad time
+
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "dining", "action": "on", "time": "19:00", "when": "tomorrow"})
+
+    assert "✅" in out
+    assert store.list("dining")                       # dining's timer WAS stored
+    assert any(bid == "ID3" for bid, _alarms in writes)  # and WAS written to dining's Bot
+
+
 def test_schedule_device_has_no_days_property(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes, now=_fri_1721)

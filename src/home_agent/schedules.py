@@ -175,9 +175,12 @@ def _expire_and_reprogram(store, registry, write_fn, now_fn):
         try:
             _program_device(device, store, registry, write_fn, now_fn)
         except ScheduleError:
-            # A validation bug, not an unreachable Bot — let it surface with a real traceback
-            # instead of being hidden behind the same log line as a routine offline device.
-            raise
+            # A validation/coding bug on THIS device, not an unreachable Bot — but an unrelated
+            # device's bad row must never fail the call the user actually made (that would let
+            # one broken Bot block all scheduling). Log loudly and distinctly so this is found,
+            # without raising.
+            log.error("BUG: reprogramming %s (rows=%s) after expiry failed validation — this is "
+                      "a validation/coding bug, not an unreachable Bot", device, row_ids, exc_info=True)
         except Exception:
             # An unrelated Bot's dead battery must not block the call the user made — but log
             # with the traceback + which device/rows, so a genuine coding defect (KeyError,
