@@ -150,6 +150,35 @@ def test_schedule_row_raises_for_past_one_time(tmp_path):
         cs.schedule_row(row)                       # NOW is 12:00 Jerusalem = 09:00Z
 
 
+def test_reconcile_logs_a_warning_for_a_corrupt_row_and_keeps_going(tmp_path, caplog):
+    # F8a: schedule_row's ValueError is also raised for a corrupt fire_at/time (not just the
+    # deliberate "already passed" case) — that must be distinguishable (a WARNING naming the
+    # row id), and must never abort the sweep for the other rows.
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    corrupt_id = store.add("garden", "on", "18:00", ["thu"], True, "not-a-real-timestamp")
+    good_id = store.add("garden", "on", "07:00", ["mon"], False, None)
+
+    with caplog.at_level("WARNING"):
+        cs.reconcile()
+
+    assert [j.name for j in jq.jobs] == [f"switchbot-cloud:{good_id}"]   # good row still registered
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(str(corrupt_id) in r.getMessage() for r in warnings)
+
+
+def test_reconcile_stays_quiet_for_the_expected_already_past_case(tmp_path, caplog):
+    # The deliberate "already passed" ValueError (a live row whose fire_at ticked by between
+    # remove_expired's strict "<" and schedule_row's "<=") is expected on every restart and
+    # must not spam a warning.
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    store.add("garden", "on", "12:00", ["thu"], True, "2026-07-16T09:00:00+00:00")  # == NOW (UTC)
+
+    with caplog.at_level("WARNING"):
+        cs.reconcile()
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
 def test_reconcile_skips_past_rows_without_raising(tmp_path):
     jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
     # fire_at EXACTLY equal to now: remove_expired's strict "<" keeps the row, so it really

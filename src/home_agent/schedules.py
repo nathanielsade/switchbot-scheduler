@@ -84,7 +84,10 @@ _SCHEDULE_SCHEMA = {"type": "function", "function": {
         "Schedule a SwitchBot device to turn on/off (or press) ONCE, at a clock time on a "
         "specific day. Bluetooth devices are programmed into the device's own timer (they fire "
         "even if this computer is off); cloud devices (e.g. the garden) are fired by the "
-        "home-agent, so it must be running. `time` is 24-hour \"HH:MM\". `when` says which day "
+        "home-agent, so it must be running. Bluetooth devices can only take a one-time timer up "
+        "to a day ahead (today or tomorrow) — for anything further out on a Bluetooth device, "
+        "say so and offer a recurring timer instead, or ask for a nearer day, rather than "
+        "attempting it (cloud devices have no such limit). `time` is 24-hour \"HH:MM\". `when` says which day "
         "and is required — use \"soonest\" when the user named no day at all. Never guess a "
         "weekday: if the user's wording does not map cleanly onto a `when` value, or asks for "
         "more than a week ahead, ask them which day instead of choosing one. For relative "
@@ -132,27 +135,33 @@ def _program_bot(ble_id, alarms):
     asyncio.run(write_alarms(ble_id, alarms))
 
 
+def _far_out_ble_error(device, fire_at_date):
+    """Shared wording for refusing a BLE one-time row set more than a day out.
+
+    A BLE one-time row encodes only (weekday, HH:MM, once-bit) — the wire format carries no
+    date. Whether the firmware fires it "on that weekday" or "at the next HH:MM, then deletes"
+    is unverified, so under the unfavourable reading a row set for more than a day out would
+    fire tonight instead — the original bug. This is enforced only at CREATE time in
+    `_schedule_impl` (before the row reaches the store) — never inside `_program_device`, which
+    rebuilds a device's whole alarm set on every schedule/cancel/expiry call: gating every
+    rebuild on every pre-existing row would let one legacy/reclassified far-out row make the
+    device permanently unschedulable AND uncancellable (cancel also rebuilds). Refuse only the
+    new row being added, until the firmware behaviour is confirmed (a hardware spike)."""
+    return ScheduleError(
+        f"{device}: Bluetooth devices can only hold a one-time timer up to a day "
+        f"ahead — the firmware's once-bit behaviour for anything further out isn't "
+        f"verified yet, and it could fire tonight instead of on "
+        f"{fire_at_date.isoformat()}. Use a recurring timer, or pick a nearer day."
+    )
+
+
 def _program_device(device, store, registry, write_fn, now_fn):
     """Rebuild `device`'s full alarm set from the store and write it to the Bot (empty list clears it).
 
-    A BLE one-time row encodes only (weekday, HH:MM, once-bit) — the wire format carries no date.
-    Whether the firmware fires it "on that weekday" or "at the next HH:MM, then deletes" is
-    unverified, so under the unfavourable reading a row set for more than a day out would fire
-    tonight instead — the original bug. Refuse those here until the firmware behaviour is
-    confirmed (a hardware spike). Cloud-routed devices never reach this function (callers route
-    them through the scheduler instead), so they are unaffected."""
+    Deliberately does NOT re-validate each row's one-time date against `now` — see
+    `_far_out_ble_error` for why that check lives only at creation time. Cloud-routed devices
+    never reach this function (callers route them through the scheduler instead)."""
     rows = store.list(device)
-    now = now_fn()
-    for r in rows:
-        if r["once"] and r["fire_at"]:
-            fire_at = datetime.fromisoformat(r["fire_at"]).astimezone(now.tzinfo)
-            if (fire_at.date() - now.date()).days > 1:
-                raise ScheduleError(
-                    f"{device}: Bluetooth devices can only hold a one-time timer up to a day "
-                    f"ahead — the firmware's once-bit behaviour for anything further out isn't "
-                    f"verified yet, and it could fire tonight instead of on "
-                    f"{fire_at.date().isoformat()}. Use a recurring timer, or pick a nearer day."
-                )
     events = [Event(r["time"], r["action"], r["days"], r["once"]) for r in rows]
     if events:
         validate(Schedule([DeviceSchedule(device, events)]), registry)
@@ -227,6 +236,11 @@ def _schedule_impl(args, *, recurring, registry, store, write_fn, now_fn, schedu
             days, once, fire_at = [_PY_WEEKDAY[target.weekday()]], True, _utc_iso(target)
     except (ValueError, AttributeError) as e:
         return f"couldn't set the timer: {e}"
+
+    if once and fire_at and not registry.is_cloud(name):
+        fire_date = datetime.fromisoformat(fire_at).astimezone(now_fn().tzinfo).date()
+        if (fire_date - now_fn().date()).days > 1:
+            return f"can't schedule that: {_far_out_ble_error(name, fire_date)}"
 
     row_id = store.add(name, action, time_str, days, once, fire_at)
     if registry.is_cloud(name):
@@ -328,18 +342,25 @@ def _cancel_impl(args, *, registry, store, write_fn, now_fn, scheduler=None):
 
     if not removed_rows:
         return f"nothing scheduled matched for {name}."
-    for r in removed_rows:
-        store.remove_id(r["id"])
+
     if registry.is_cloud(name):
+        # Unschedule the jobs FIRST, delete from the store only once every unschedule has
+        # succeeded. CloudScheduler keys jobs by the row's ORIGINAL id (_job_name(row_id)); if
+        # we deleted first and a partial failure forced a re-add, the rolled-back rows would get
+        # NEW autoincrement ids that no longer match the (partially) unscheduled/still-armed
+        # jobs — reporting failure while some of the cancellation already half-applied. Doing
+        # nothing to the store until success means a failure needs no rollback at all.
         if scheduler is not None:
             try:
                 for r in removed_rows:
                     scheduler.unschedule(r["id"])
             except Exception as e:
-                for r in removed_rows:   # symmetric with the BLE branch below: keep the record
-                    store.add(r["device"], r["action"], r["time"], r["days"], r["once"], r["fire_at"])
                 return f"couldn't unschedule {name} ({e}) — timer(s) not cancelled, try again."
+        for r in removed_rows:
+            store.remove_id(r["id"])
     else:
+        for r in removed_rows:
+            store.remove_id(r["id"])
         try:
             _program_device(name, store, registry, write_fn, now_fn)
         except Exception as e:

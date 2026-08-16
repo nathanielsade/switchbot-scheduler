@@ -1,7 +1,8 @@
 import asyncio, logging
-from datetime import datetime, time as dtime, timezone as _dt_timezone
+from datetime import datetime, time as dtime
 from switchbot_scheduler.actuator import resolve_action
 from . import switchbot_cloud
+from .schedules import _utc_iso  # canonical UTC-ISO helper (no cycle: schedules.py doesn't import this module)
 
 log = logging.getLogger("home_agent")
 _PREFIX = "switchbot-cloud:"
@@ -22,13 +23,24 @@ class CloudScheduler:
         # schedules._expire_and_reprogram), nothing here writes a cloud device at startup —
         # the next schedule/cancel call rebuilds jobs from the store, so a stale store row is
         # never left armed anywhere.
-        self.store.remove_expired(self.now_fn().astimezone(_dt_timezone.utc).isoformat())
+        self.store.remove_expired(_utc_iso(self.now_fn()))
         for row in self.store.list():
             if self.registry.is_cloud(row["device"]):
                 try:
                     self.schedule_row(row)
-                except ValueError:
-                    continue          # already-past rows are expected on restart
+                except ValueError as e:
+                    # schedule_row raises ValueError for THREE distinct reasons: (1) the
+                    # deliberate "already passed" raise below — expected on every restart, stay
+                    # quiet; (2) datetime.fromisoformat on a corrupt fire_at; (3) int(x) on a
+                    # corrupt time string. (2)/(3) mean a bad row is silently skipped forever
+                    # while get_schedule keeps showing it as active — log loudly, naming the row,
+                    # so it's actually found. Never abort the reconcile sweep either way.
+                    if str(e) == "that moment has already passed":
+                        log.debug("reconcile: skipping already-past row id=%s", row.get("id"))
+                    else:
+                        log.warning("reconcile: skipping corrupt schedule row id=%s (%s): %s",
+                                    row.get("id"), row, e)
+                    continue
 
     def schedule_row(self, row):
         name = _job_name(row["id"])

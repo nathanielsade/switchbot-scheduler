@@ -408,6 +408,58 @@ def test_two_days_out_is_refused_for_ble_and_nothing_persists(tmp_path):
     assert writes == []
 
 
+def test_far_out_ble_row_can_still_be_cancelled(tmp_path):
+    # F5 regression: a pre-existing far-out one-time row (legacy row, or a device reclassified
+    # cloud->BLE) must not make the device permanently UNCANCELLABLE. cancel_schedule rebuilds
+    # the device's whole alarm set via _program_device — that rebuild must never re-run the
+    # BLE day-ahead guard, or the only command that could clear the offending row would itself
+    # be blocked by it.
+    from home_agent.schedules import _utc_iso
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    far_out = _utc_iso(datetime(2026, 8, 25, 18, 30, tzinfo=_TZ))  # 11 days out — well over the cap
+    store.add("dining", "on", "18:30", ["tue"], True, far_out)
+
+    out = _tool(tools, "cancel_schedule").impl({"device": "פינת אוכל"})
+    assert "✅" in out
+    assert store.list("dining") == []
+    assert writes[-1] == ("ID3", [])
+
+
+def test_near_term_ble_schedule_succeeds_despite_a_far_out_row_on_the_same_device(tmp_path):
+    # F5 regression: the guard must scope to the row being CREATED, not every row already
+    # stored for the device — a legacy far-out row must not lock the device out of new
+    # near-term scheduling either.
+    from home_agent.schedules import _utc_iso
+    writes = []
+    tools, store = _tools(tmp_path, writes, now=_fri_1721)
+    far_out = _utc_iso(datetime(2026, 8, 25, 18, 30, tzinfo=_TZ))
+    store.add("dining", "on", "18:30", ["tue"], True, far_out)
+
+    out = _tool(tools, "schedule_device").impl(
+        {"device": "פינת אוכל", "action": "on", "time": "19:00", "when": "tomorrow"})
+    assert "✅" in out
+    rows = store.list("dining")
+    assert len(rows) == 2                       # the far-out legacy row is untouched
+    assert any(r["fire_at"].startswith("2026-08-15") for r in rows)
+    assert len(writes[-1][1]) == 2               # rebuild wrote BOTH alarms, unblocked
+
+
+def test_schedule_device_description_warns_about_the_ble_day_ahead_limit(tmp_path):
+    # F6: the schema description IS the model's instruction — it must not promise
+    # day_after_tomorrow/in_a_week/weekday tokens work on Bluetooth devices when they never do.
+    tools, _ = _tools(tmp_path, [])
+    desc = _tool(tools, "schedule_device").schema["function"]["description"]
+    assert "Bluetooth" in desc and "day ahead" in desc
+    assert "recurring timer" in desc
+    # every previously-existing clause must survive verbatim
+    assert "cloud devices" in desc.lower()
+    assert "HH:MM" in desc
+    assert "at most 5 timers" in desc
+    assert "get_current_time" in desc
+    assert "Never guess a" in desc
+
+
 def test_tomorrow_still_works_for_ble(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes, now=_fri_1721)

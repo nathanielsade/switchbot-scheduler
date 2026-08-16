@@ -99,6 +99,42 @@ def test_cloud_cancel_rolls_back_on_unschedule_failure(tmp_path):
     assert len(store.list("garden")) == 1     # rolled back, record intact for a retry
 
 
+def test_cloud_cancel_partial_unschedule_failure_leaves_both_rows_with_original_ids(tmp_path):
+    # F7: unschedule must run BEFORE any store deletion. If it raises partway through a
+    # multi-row cancel, nothing must be deleted — a delete-then-rollback-via-re-add would
+    # hand the restored rows NEW autoincrement ids that no longer match the CloudScheduler
+    # jobs keyed by the ORIGINAL id, half-applying the cancellation while reporting failure.
+    store = ScheduleStore(str(tmp_path / "s.db"))
+
+    class FlakyOnSecond:
+        def __init__(self):
+            self.scheduled = []; self.unscheduled = []
+        def schedule_row(self, row):
+            self.scheduled.append(row["id"])
+        def unschedule(self, row_id):
+            self.unscheduled.append(row_id)
+            if len(self.unscheduled) == 2:
+                raise RuntimeError("jobqueue down")
+
+    sch = FlakyOnSecond()
+    tools = {t.name: t for t in build_schedule_tools(_reg(tmp_path), store, now_fn=_now, scheduler=sch)}
+    tools["schedule_recurring_device"].impl(
+        {"device": "גינה", "action": "on", "time": "18:00", "days": ["mon"],
+         "repetition_phrase": "כל שני"})
+    tools["schedule_recurring_device"].impl(
+        {"device": "גינה", "action": "on", "time": "19:00", "days": ["tue"],
+         "repetition_phrase": "כל שלישי"})
+    before_ids = sorted(r["id"] for r in store.list("garden"))
+    assert len(before_ids) == 2
+
+    out = tools["cancel_schedule"].impl({"device": "גינה"})
+
+    assert "✅" not in out
+    after = store.list("garden")
+    assert len(after) == 2                              # BOTH rows still present
+    assert sorted(r["id"] for r in after) == before_ids  # with their ORIGINAL ids, unrenumbered
+
+
 def test_cloud_device_respects_the_five_timer_cap(tmp_path):
     store = ScheduleStore(str(tmp_path / "s.db")); sch = FakeScheduler()
     tools = {t.name: t for t in build_schedule_tools(
