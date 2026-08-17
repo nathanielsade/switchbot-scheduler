@@ -174,6 +174,19 @@ def test_schedule_device_has_no_days_property(tmp_path):
     assert "when" in _tool(tools, "schedule_device").schema["function"]["parameters"]["required"]
 
 
+def test_device_descriptions_steer_the_model_to_a_bare_room_name(tmp_path):
+    """Live E2E on 2026-08-17: the model passed 'אור בסלון'/'פינת האוכל' and three of four
+    devices failed to resolve, because Registry.resolve is exact-match. control_device in
+    home.py already carried concrete examples and did not have the problem; the schedule
+    schemas did not. Keep the steering in all three."""
+    writes = []
+    tools, _store = _tools(tmp_path, writes, now=_fri_1721)
+    for name in ("schedule_device", "schedule_recurring_device", "cancel_schedule"):
+        desc = _tool(tools, name).schema["function"]["parameters"]["properties"]["device"]["description"]
+        assert "סלון" in desc, f"{name} lost its concrete example"
+        assert "אור בסלון" in desc, f"{name} lost the do-not-pass-a-phrase steering"
+
+
 def test_one_time_row_contract(tmp_path):
     writes = []
     tools, store = _tools(tmp_path, writes, now=_fri_1721)

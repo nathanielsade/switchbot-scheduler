@@ -96,7 +96,11 @@ _SCHEDULE_SCHEMA = {"type": "function", "function": {
         "user's language."
     ),
     "parameters": {"type": "object", "properties": {
-        "device": {"type": "string", "description": "Room/device name or alias, Hebrew or English."},
+        "device": {"type": "string",
+                   "description": "Room/device name or alias, Hebrew or English (e.g. 'סלון', "
+                                  "'living room', 'מזגן', 'kitchen'). Pass the bare room/device "
+                                  "name only — never a phrase like 'אור בסלון' or 'האור במטבח', "
+                                  "and drop any leading preposition."},
         "action": {"type": "string", "enum": ["on", "off", "press"],
                    "description": "on, off, or press; the AC only honors press."},
         "time": {"type": "string", "description": "24-hour clock time, \"HH:MM\"."},
@@ -116,7 +120,11 @@ _RECURRING_SCHEMA = {"type": "function", "function": {
         "timers. Report what you scheduled, in the user's language."
     ),
     "parameters": {"type": "object", "properties": {
-        "device": {"type": "string", "description": "Room/device name or alias, Hebrew or English."},
+        "device": {"type": "string",
+                   "description": "Room/device name or alias, Hebrew or English (e.g. 'סלון', "
+                                  "'living room', 'מזגן', 'kitchen'). Pass the bare room/device "
+                                  "name only — never a phrase like 'אור בסלון' or 'האור במטבח', "
+                                  "and drop any leading preposition."},
         "action": {"type": "string", "enum": ["on", "off", "press"],
                    "description": "on, off, or press; the AC only honors press."},
         "time": {"type": "string", "description": "24-hour clock time, \"HH:MM\"."},
@@ -285,7 +293,9 @@ _CANCEL_SCHEMA = {"type": "function", "function": {
         "a clock time on different dates. Reports the date of everything cancelled."
     ),
     "parameters": {"type": "object", "properties": {
-        "device": {"type": "string", "description": "Device name or alias."},
+        "device": {"type": "string",
+                   "description": "Room/device name or alias, Hebrew or English (e.g. 'סלון', "
+                                  "'מזגן'). Bare name only — not a phrase like 'אור בסלון'."},
         "time": {"type": "string", "description": "24-hour \"HH:MM\" to cancel one timer; omit to clear all for the device."},
         "when": {"type": "string", "enum": _WHEN_TOKENS,
                  "description": "Which day, to disambiguate two timers at the same clock time on "
