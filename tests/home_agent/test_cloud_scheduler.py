@@ -40,14 +40,14 @@ def test_reconcile_registers_only_cloud_recurring(tmp_path):
 
 def test_reconcile_drops_expired_one_time(tmp_path):
     jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
-    store.add("garden", "on", "09:00", ["thu"], True, "2026-07-16T09:00:00+03:00")  # past
+    store.add("garden", "on", "09:00", ["thu"], True, "2026-07-16T06:00:00+00:00")  # past
     cs.reconcile()
     assert jq.jobs == []                    # not fired late
     assert store.list("garden") == []       # dropped
 
 def test_reconcile_registers_future_one_time(tmp_path):
     jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
-    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T18:00:00+03:00")  # future
+    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T15:00:00+00:00")  # future
     cs.reconcile()
     assert [j.name for j in jq.jobs] == [f"switchbot-cloud:{rid}"]
 
@@ -66,7 +66,7 @@ def test_one_time_fire_sends_command_and_removes_row(tmp_path):
     cs = CloudScheduler(jq, store, _reg(tmp_path),
                         send_command_fn=record_send, tz=TZ, now_fn=lambda: NOW)
 
-    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T18:00:00+03:00")
+    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T15:00:00+00:00")
     row = store.list("garden")[0]
     cs.schedule_row(row)
 
@@ -84,7 +84,7 @@ def test_one_time_fire_removes_row_even_when_send_fails(tmp_path):
     cs = CloudScheduler(jq, store, _reg(tmp_path),
                         send_command_fn=failing_send, tz=TZ, now_fn=lambda: NOW)
 
-    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T18:00:00+03:00")
+    rid = store.add("garden", "on", "18:00", ["thu"], True, "2026-07-16T15:00:00+00:00")
     row = store.list("garden")[0]
     cs.schedule_row(row)
 
@@ -140,3 +140,74 @@ def test_weekday_mapping_multiple_days(tmp_path):
     cs.schedule_row(row)
     job = jq.get_jobs_by_name(f"switchbot-cloud:{rid}")[0]
     assert job.days == (1, 2, 5), f"Expected (1, 2, 5) for mon/tue/fri, got {job.days}"
+
+def test_schedule_row_raises_for_past_one_time(tmp_path):
+    import pytest
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)   # note: (store, cs) — store first
+    row = {"id": 1, "device": "garden", "action": "on", "time": "09:00",
+           "days": ["thu"], "once": True, "fire_at": "2026-07-16T06:00:00+00:00"}
+    with pytest.raises(ValueError):
+        cs.schedule_row(row)                       # NOW is 12:00 Jerusalem = 09:00Z
+
+
+def test_reconcile_logs_a_warning_for_a_corrupt_row_and_keeps_going(tmp_path, caplog):
+    # F8a: schedule_row's ValueError is also raised for a corrupt fire_at/time (not just the
+    # deliberate "already passed" case) — that must be distinguishable (a WARNING naming the
+    # row id), and must never abort the sweep for the other rows.
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    corrupt_id = store.add("garden", "on", "18:00", ["thu"], True, "not-a-real-timestamp")
+    good_id = store.add("garden", "on", "07:00", ["mon"], False, None)
+
+    with caplog.at_level("WARNING"):
+        cs.reconcile()
+
+    assert [j.name for j in jq.jobs] == [f"switchbot-cloud:{good_id}"]   # good row still registered
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(str(corrupt_id) in r.getMessage() for r in warnings)
+
+
+def test_reconcile_stays_quiet_for_the_expected_already_past_case(tmp_path, caplog):
+    # The deliberate "already passed" ValueError (a live row whose fire_at ticked by between
+    # remove_expired's strict "<" and schedule_row's "<=") is expected on every restart and
+    # must not spam a warning.
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    store.add("garden", "on", "12:00", ["thu"], True, "2026-07-16T09:00:00+00:00")  # == NOW (UTC)
+
+    with caplog.at_level("WARNING"):
+        cs.reconcile()
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_reconcile_survives_a_non_valueerror_from_schedule_row(tmp_path, caplog):
+    # G1: a corrupt row can make schedule_row raise something other than ValueError (e.g. a
+    # KeyError for a row missing time/days/fire_at, or whatever run_once/run_daily raises for a
+    # bad value). reconcile() runs UNGUARDED at startup for every cloud device, so one such row
+    # must never abort the sweep and take the rest of cloud scheduling down with it.
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    bad_id = store.add("garden", "on", "18:00", ["thu"], False, None)
+    good_id = store.add("garden", "on", "07:00", ["mon"], False, None)
+
+    real_schedule_row = cs.schedule_row
+    def flaky_schedule_row(row):
+        if row["id"] == bad_id:
+            raise KeyError("time")
+        return real_schedule_row(row)
+    cs.schedule_row = flaky_schedule_row
+
+    with caplog.at_level("WARNING"):
+        cs.reconcile()                                 # must not raise
+
+    assert [j.name for j in jq.jobs] == [f"switchbot-cloud:{good_id}"]  # good row still scheduled
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(str(bad_id) in r.getMessage() for r in warnings)
+
+
+def test_reconcile_skips_past_rows_without_raising(tmp_path):
+    jq = FakeJobQueue(); store, cs = _sched(tmp_path, jq)
+    # fire_at EXACTLY equal to now: remove_expired's strict "<" keeps the row, so it really
+    # reaches schedule_row, whose "<=" raises. A row merely in the past would be deleted by
+    # the sweep first, and this test would then pass even without the code change.
+    store.add("garden", "on", "12:00", ["thu"], True, "2026-07-16T09:00:00+00:00")
+    cs.reconcile()                                 # must not raise
+    assert jq.jobs == []

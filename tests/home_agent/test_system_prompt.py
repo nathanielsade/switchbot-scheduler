@@ -23,3 +23,22 @@ def test_run_turn_sends_identical_system_prompt_each_turn(make_fake_client):
     sys2 = client._calls[1]["messages"][0]
     assert sys1 == {"role": "system", "content": FAMILY_SYSTEM_PROMPT}
     assert sys1 == sys2  # byte-identical → OpenAI auto-cache can hit
+
+
+def test_prompt_carries_the_scheduling_rules():
+    p = FAMILY_SYSTEM_PROMPT
+    # Rule (a): device timers are one-time by default
+    assert "Device timers are one-time by default" in p
+    # Rule (a): use schedule_recurring_device only when user explicitly asked
+    assert "schedule_recurring_device" in p
+    # Rule (b): copy the tool's date VERBATIM. Live E2E on 2026-08-17 showed the model
+    # satisfying a weaker "state the date" rule by paraphrasing it into Hebrew prose and
+    # getting it wrong ("14 בנובמבר 2023" for a timer correctly stored as 2026-08-18), which
+    # defeats the whole point of surfacing the date.
+    assert "copy the calendar" in p
+    assert "exactly as written" in p
+    assert "do not compute a date yourself" in p
+    # Rule (c): never claim untested success
+    assert "unless the tool call actually returned success" in p
+    # Maintains: still digit-free
+    assert not any(ch.isdigit() for ch in p)

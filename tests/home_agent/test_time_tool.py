@@ -16,6 +16,17 @@ def test_get_current_time_includes_weekday_so_model_need_not_guess():
     assert today_weekday in out
 
 
+def test_build_time_tools_uses_given_timezone():
+    from zoneinfo import ZoneInfo
+    from home_agent.tools import build_time_tools
+
+    tools = build_time_tools(ZoneInfo("Asia/Jerusalem"))
+    out = tools[0].impl({})
+    # Israel is never UTC; the reply must not carry a UTC marker.
+    assert "UTC" not in out
+    assert tools[0].name == "get_current_time"
+
+
 def test_loop_can_call_get_current_time(make_fake_client):
     client = make_fake_client([
         {"tool_calls": [{"id": "c1", "name": "get_current_time", "arguments": {}}]},

@@ -49,6 +49,32 @@ def test_loop_stops_at_max_steps(make_fake_client):
     assert len(client._calls) == 3  # stopped exactly at the cap, no runaway
 
 
+def test_finance_tool_result_content_is_not_logged_but_the_name_is(make_fake_client, caplog):
+    import logging
+    secret = "יתרה נוכחית: ₪123,456.78"
+    tool = _tool("financial_summary", lambda args: secret)
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "financial_summary", "arguments": {}}]},
+        {"content": "final answer"},
+    ])
+    with caplog.at_level(logging.INFO, logger="home_agent"):
+        run_turn("balance?", [], client=client, model="gpt-4o", system="S", tools=[tool])
+    assert not any(secret in r.message for r in caplog.records)          # content never logged
+    assert any("financial_summary" in r.message for r in caplog.records)  # but the tool name is
+
+
+def test_non_finance_tool_result_still_logs_truncated_content(make_fake_client, caplog):
+    import logging
+    tool = _tool("do_it", lambda args: "tool-output")
+    client = make_fake_client([
+        {"tool_calls": [{"id": "c1", "name": "do_it", "arguments": {}}]},
+        {"content": "final answer"},
+    ])
+    with caplog.at_level(logging.INFO, logger="home_agent"):
+        run_turn("hi", [], client=client, model="gpt-4o", system="S", tools=[tool])
+    assert any("tool-output" in r.message for r in caplog.records)
+
+
 def test_final_step_withholds_tools_to_force_text_answer(make_fake_client):
     from home_agent.tools import DEFAULT_TOOLS
     # model keeps requesting tools; the final allowed step must stop offering them so a real
