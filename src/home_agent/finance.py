@@ -14,6 +14,17 @@ log = logging.getLogger("home_agent")
 CATEGORIES = ("groceries", "rent", "salary", "utilities", "transport", "health",
               "restaurants", "subscriptions", "shopping", "cash", "transfer", "other")
 
+# Hebrew labels for CATEGORIES — finance replies are Hebrew end-to-end, so the raw English enum
+# values (used internally by finance.py/category_rules) must never be printed verbatim. Covers
+# every value in CATEGORIES; uncategorized rows use "אחר" directly. Lives here (not in
+# finance_nudges) because finance.py is the leaf module — finance_nudges imports FROM finance.
+_CATEGORY_HE = {
+    "rent": "שכירות", "transport": "תחבורה", "groceries": "מכולת", "restaurants": "מסעדות",
+    "subscriptions": "מנויים", "health": "בריאות", "shopping": "קניות", "utilities": "חשבונות",
+    "transfer": "העברות/חיסכון", "salary": "הכנסה", "cash": "מזומן", "other": "אחר",
+}
+assert set(CATEGORIES) <= set(_CATEGORY_HE)
+
 # cash_flow_status classification (v2.1, category-driven — see docs/superpowers/sdd/c-1-plan.md).
 # Fixed = committed monthly outflow: named categories + committed savings/gmal (transfer negatives).
 FIXED_CATEGORIES = frozenset({"rent", "utilities", "subscriptions"})
@@ -492,6 +503,49 @@ def _forecast_impl(args, *, store, now_fn) -> str:
     return "\n".join(lines)
 
 
+_RECURRING_LOOKBACK_DAYS = 95  # same constant _forecast_impl uses (tuned for the ≤3-day drift gate)
+
+_RECURRING_COMMITMENTS_SCHEMA = {"type": "function", "function": {
+    "name": "list_recurring_commitments",
+    "description": (
+        "List the family's detected recurring/fixed commitments — subscriptions and other regular "
+        "committed outflows (e.g. Spotify, Google One, a savings/gmal deposit) — with typical amount, "
+        "roughly how many months seen, and confidence. Use this for 'what are our subscriptions / fixed "
+        "commitments' questions. This is DIFFERENT from cash_flow_forecast: this tool detects recurring "
+        "items on a SPEND basis (itemized card purchases included), so it catches card-itemized "
+        "subscriptions that cash_flow_forecast — which only looks at the bank feed for its balance "
+        "projection — would miss. Do not conflate the two totals. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+
+def _recurring_commitments_impl(args, *, store, now_fn) -> str:
+    now = now_fn()
+    lookback = (now.date() - timedelta(days=_RECURRING_LOOKBACK_DAYS)).isoformat()
+    rows, _partial = _spendable_rows(store, lookback, now.date().isoformat())
+    recurring = _detect_recurring(rows)
+    rules = store.active_rules()
+    kept = []
+    for r in recurring:
+        if r["sign"] > 0:
+            continue  # recurring income excluded
+        cat = _categorize(r["description"], rules)
+        if cat is not None and cat != TRANSFER_CATEGORY and cat not in CATEGORIES:
+            continue  # defensive; shouldn't happen
+        kept.append((r, cat))
+    if not kept:
+        return "לא זוהו הוצאות קבועות/מנויים חוזרים עדיין."
+    kept.sort(key=lambda rc: abs(rc[0]["amount_agorot"]), reverse=True)
+    total = sum(r["amount_agorot"] for r, _cat in kept)
+    lines = ["הוצאות קבועות/מנויים שזוהו:"]
+    for r, cat in kept:
+        label = f" [{_CATEGORY_HE.get(cat, cat)}]" if cat else ""
+        lines.append(f"{r['description']}: {_shekels(-r['amount_agorot'])} (~{r['occurrences']} חודשים, "
+                     f"~יום {r['day']}, ביטחון {r['confidence']}){label}")
+    lines.append(f"סה\"כ: {_shekels(-total)}")
+    return "\n".join(lines)
+
+
 def _month_start(d):
     return d.replace(day=1)
 
@@ -694,6 +748,8 @@ def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
              impl=lambda a: _forecast_impl(a, store=store, now_fn=now_fn)),
         Tool(name="cash_flow_status", schema=_CASH_FLOW_STATUS_SCHEMA,
              impl=lambda a: _cash_flow_status_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="list_recurring_commitments", schema=_RECURRING_COMMITMENTS_SCHEMA,
+             impl=lambda a: _recurring_commitments_impl(a, store=store, now_fn=now_fn)),
     ]
 
 

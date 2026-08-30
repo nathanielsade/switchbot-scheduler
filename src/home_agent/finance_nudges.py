@@ -7,20 +7,9 @@ helpers (_spendable_rows / _categorize / _period_range / _shekels) rather than r
 logic, so a nudge can never diverge from what financial_summary/spending_by_category report —
 see docs/superpowers/sdd/d-1-plan.md.
 """
-from .finance import CATEGORIES, _categorize, _period_range, _shekels, _spendable_rows
+from .finance import CATEGORIES, _CATEGORY_HE, _categorize, _period_range, _shekels, _spendable_rows
 
 _TOP_CATEGORIES = 3
-
-# Hebrew labels for finance.CATEGORIES — the nudge messages are Hebrew end-to-end, so the raw
-# English enum values (used internally by finance.py/category_rules) must never be printed
-# verbatim here. Covers every value in CATEGORIES; uncategorized rows use "אחר" directly (see
-# _category_breakdown), which is why it's included too.
-_CATEGORY_HE = {
-    "rent": "שכירות", "transport": "תחבורה", "groceries": "מכולת", "restaurants": "מסעדות",
-    "subscriptions": "מנויים", "health": "בריאות", "shopping": "קניות", "utilities": "חשבונות",
-    "transfer": "העברות/חיסכון", "salary": "הכנסה", "cash": "מזומן", "other": "אחר",
-}
-assert set(CATEGORIES) <= set(_CATEGORY_HE)
 
 
 def _category_label(cat):
