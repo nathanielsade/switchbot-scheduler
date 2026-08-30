@@ -28,6 +28,8 @@ class FinanceStore:
                 "CREATE TABLE IF NOT EXISTS source_coverage ("
                 " source TEXT, account TEXT, coverage_start TEXT, coverage_end TEXT,"
                 " scraped_at TEXT, PRIMARY KEY(source,account));"
+                "CREATE TABLE IF NOT EXISTS finance_alerts_sent ("
+                " fingerprint TEXT PRIMARY KEY, alerted_at TEXT DEFAULT CURRENT_TIMESTAMP);"
             )
             conn.commit()
 
@@ -149,6 +151,37 @@ class FinanceStore:
             return False
         coverage_start, coverage_end = row
         return coverage_start <= from_date and coverage_end >= to_date
+
+    def mark_alerted(self, fingerprints):
+        """Idempotently record that these transaction fingerprints were already alerted on, so a
+        later scan (even after a restart) never re-alerts the same charge."""
+        fingerprints = list(fingerprints)
+        if not fingerprints:
+            return
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO finance_alerts_sent (fingerprint) VALUES (?)",
+                [(f,) for f in fingerprints])
+            conn.commit()
+
+    def unalerted_large(self, threshold_agorot, since=None):
+        """Expense transactions at/beyond threshold_agorot (absolute value) that have no row yet
+        in finance_alerts_sent — i.e. not-yet-alerted "unusual" charges. `since` (YYYY-MM-DD),
+        if given, restricts to txn_date >= since."""
+        clauses = ["amount_agorot <= ?"]
+        params = [-abs(threshold_agorot)]
+        if since:
+            clauses.append("txn_date >= ?")
+            params.append(since)
+        where = " AND ".join(clauses)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT source, account, fingerprint, txn_date, amount_agorot, description"
+                " FROM transactions t WHERE " + where +
+                " AND NOT EXISTS (SELECT 1 FROM finance_alerts_sent a WHERE a.fingerprint = t.fingerprint)"
+                " ORDER BY txn_date", params).fetchall()
+        cols = ("source", "account", "fingerprint", "txn_date", "amount_agorot", "description")
+        return [dict(zip(cols, row)) for row in rows]
 
     def covered_cards(self, source, from_date, to_date, grace_days=0):
         """A card/account is covered iff its coverage fully contains from_date and its
