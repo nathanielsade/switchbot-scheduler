@@ -527,6 +527,14 @@ def _cash_flow_terms(store, now_fn) -> dict:
     income_categories, fixed_categories = {}, {}
     uncategorized_income_agorot = 0
     window_months = []
+    # Rent is a once-a-month bill of a stable amount, but the individual checks land on
+    # irregular dates that can skip a calendar month within the window (e.g. a check on the
+    # 31st, then the next on the 1st of the month-after-next -> the month in between gets none).
+    # Summing rent PER CALENDAR MONTH and then medianing those monthly sums undercounts rent
+    # whenever the checks don't land one-per-window-month. Instead, collect the individual rent
+    # PAYMENT amounts across the whole window (irrespective of which month each lands in) and use
+    # their median as rent's monthly contribution below — robust to the calendar-month skew.
+    rent_payments_agorot = []
 
     for start in window_starts:
         window_months.append(start.strftime("%Y-%m"))
@@ -558,6 +566,13 @@ def _cash_flow_terms(store, now_fn) -> dict:
                     # bill like rent, not variable spending on its posting date.
                     month_fixed += -amt
                     fixed_categories["card_bills"] = fixed_categories.get("card_bills", 0) + (-amt)
+                elif cat == "rent":
+                    # Kept OUT of month_fixed (the per-calendar-month sum): rent's monthly figure
+                    # is derived separately below from the median individual payment, not from
+                    # summing-then-medianing per calendar month. Still tracked in
+                    # fixed_categories for the transparency breakdown.
+                    rent_payments_agorot.append(-amt)
+                    fixed_categories["rent"] = fixed_categories.get("rent", 0) + (-amt)
                 elif cat in FIXED_CATEGORIES:
                     month_fixed += -amt
                     fixed_categories[cat] = fixed_categories.get(cat, 0) + (-amt)
@@ -568,7 +583,9 @@ def _cash_flow_terms(store, now_fn) -> dict:
         fixed_by_month.append(month_fixed)
 
     income_expected = int(statistics.median(income_by_month))
-    fixed_expected = int(statistics.median(fixed_by_month))
+    non_rent_fixed_expected = int(statistics.median(fixed_by_month))
+    rent_expected = int(statistics.median(rent_payments_agorot)) if rent_payments_agorot else 0
+    fixed_expected = non_rent_fixed_expected + rent_expected
     assert isinstance(income_expected, int) and isinstance(fixed_expected, int)
 
     rows_this_month, partial_flag = _spendable_rows(store, this_month_start.isoformat(), today.isoformat())

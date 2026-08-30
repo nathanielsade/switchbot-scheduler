@@ -132,6 +132,31 @@ def test_rent_by_check_via_category_not_text():
     assert t["fixed_categories"]["rent"] == _RENT * 3
 
 
+def test_rent_check_skips_calendar_months_median_of_payments_not_undercounted():
+    # Real-world bug: rent is paid by check ~once/month, but checks land on irregular dates that
+    # can skip calendar months within the 3-month window (e.g. a check on the 31st then the next
+    # on the 1st of the month-after-next -> the month in between gets NO check at all). Summing
+    # each fixed category PER CALENDAR MONTH and taking the median of those monthly totals
+    # undercounts rent whenever fewer than a "majority" of the 3 window months happen to contain a
+    # check (here: only 1 of 3, since two consecutive months are skipped) -> the old code's
+    # per-month median collapses to 0 for rent even though a real ~_RENT check landed in the
+    # window. Fix: rent's contribution to fixed_expected is the median of the INDIVIDUAL
+    # rent-payment amounts across the whole window (which month each lands in doesn't matter),
+    # not the per-calendar-month sum's median.
+    store = _store()
+    _seed_rules(store)
+    _seed_window(store, rent=0)  # keep subscriptions/deposit/salary baseline, no per-month rent here
+    # Single rent check landing in month 3 (Jun) only — months 1 (Apr) and 2 (May) are both
+    # skipped, exactly the "checks land on irregular dates that skip calendar months" pattern.
+    store.upsert_transactions([_txn("צ'ק 9002", -_RENT, "2026-06-01")])
+    store.add_rule("צ'ק 9002", "rent")
+    t = _cash_flow_terms(store, _frozen_mid_july)
+    # Typical single rent check (_RENT) — NOT undercounted to 0 by a per-calendar-month median
+    # (Apr=0, May=0, Jun=_RENT -> median 0) that only "sees" whichever month the check landed in.
+    assert t["fixed_categories"]["rent"] == _RENT  # transparency total across window unaffected
+    assert t["fixed_expected"] == _SUBSCRIPTIONS + _DEPOSIT + _RENT
+
+
 def test_uncategorized_positive_excluded_and_flagged():
     store_a = _store()
     _seed_rules(store_a)
