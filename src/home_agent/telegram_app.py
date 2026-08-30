@@ -107,7 +107,7 @@ def _resolve_nudge_chat_id(config):
 def build_application(config, *, client=None, conversation=None, send_fn=None):
     """Build the long-poll Telegram Application. Injectable client/conversation/send_fn for tests
     (no network is touched until .run_polling()).
-    `send_fn(chat_id, text)` is the seam proactive nudges (finance recaps/alerts) send through —
+    `send_fn(chat_id, text)` is the seam proactive nudges (finance recaps/summaries) send through —
     mirroring cloud_send_fn/actuate_fn, it's a plain sync callable; job callbacks invoke it via
     `asyncio.to_thread` (never `context.bot` directly), so `job.callback(None)` works in tests."""
     if client is None:
@@ -181,22 +181,28 @@ def build_application(config, *, client=None, conversation=None, send_fn=None):
                 name="finance-sync")
 
             async def _month_recap_job(context=None):
-                now = datetime.now(ZoneInfo(config.home_tz))
-                if now.day != 2 or nudge_chat_id is None:
-                    return
-                text = build_month_recap(finance_store, now)
-                if text:
-                    await asyncio.to_thread(send_fn, nudge_chat_id, text)
+                try:  # never crash the bot on a nudge failure (matches _nightly_finance_sync)
+                    now = datetime.now(ZoneInfo(config.home_tz))
+                    if now.day != 2 or nudge_chat_id is None:
+                        return
+                    text = build_month_recap(finance_store, now)
+                    if text:
+                        await asyncio.to_thread(send_fn, nudge_chat_id, text)
+                except Exception as e:
+                    log.warning("month-recap nudge failed: %s", e)
             app.job_queue.run_daily(
                 _month_recap_job, time=dtime(9, 0, tzinfo=ZoneInfo(config.home_tz)),
                 name="finance-month-recap")
 
             async def _weekly_summary_job(context=None):
-                if nudge_chat_id is None:
-                    return
-                now = datetime.now(ZoneInfo(config.home_tz))
-                text = build_weekly_summary(finance_store, now)
-                await asyncio.to_thread(send_fn, nudge_chat_id, text)
+                try:  # never crash the bot on a nudge failure
+                    if nudge_chat_id is None:
+                        return
+                    now = datetime.now(ZoneInfo(config.home_tz))
+                    text = build_weekly_summary(finance_store, now)
+                    await asyncio.to_thread(send_fn, nudge_chat_id, text)
+                except Exception as e:
+                    log.warning("weekly-summary nudge failed: %s", e)
             # Sunday = days=(0,): PTB v20+ maps Sun=0..Sat=6 (matches cloud_scheduler._DAY_NUM) —
             # NEVER (6,), which would silently fire on Saturday instead.
             app.job_queue.run_daily(
