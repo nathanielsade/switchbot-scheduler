@@ -531,13 +531,13 @@ def _cash_flow_terms(store, now_fn) -> dict:
     for start in window_starts:
         window_months.append(start.strftime("%Y-%m"))
         month_end = _month_end(start)
-        rows = store.transactions_between(start.isoformat(), month_end.isoformat())
-        # A card whose Max detail covers this window month is itemized (its purchases are
-        # categorized individually below); only an UN-itemized card's bank bill-line should be
-        # folded into fixed_expected here — otherwise it'd double-count against the itemized rows.
-        covered = {_card4(c) for c in
-                   store.covered_cards("max", start.isoformat(), month_end.isoformat(),
-                                       grace_days=_COVERAGE_GRACE_DAYS)}
+        # Option A (same helper the current-month variable calc uses, see _spendable_rows):
+        # a card whose Max detail covers this window month is itemized (its purchases are
+        # categorized individually below via the kept Max rows); its bank card-bill line is
+        # dropped here so it never double-counts against those itemized rows. An UN-itemized
+        # card's bank bill-line IS kept (and folds into fixed below) since it's the only record
+        # of that spending. Income rows are unaffected — only card-bill lines are ever excluded.
+        rows, _partial = _spendable_rows(store, start.isoformat(), month_end.isoformat())
         month_income = month_fixed = 0
         for row in rows:
             amt = row["amount_agorot"]
@@ -552,9 +552,10 @@ def _cash_flow_terms(store, now_fn) -> dict:
                     income_categories[cat] = income_categories.get(cat, 0) + amt
             elif amt < 0:
                 bill = _CARD_BILL_RE.search(_norm_desc(row["description"]))
-                if bill and _card4(bill.group(2)) not in covered:
-                    # un-itemized card's monthly bill: a committed bill like rent, not variable
-                    # spending on its posting date.
+                if bill:
+                    # a bill line surviving _spendable_rows can only belong to an un-itemized
+                    # card (a covered card's bill was already dropped above): a committed monthly
+                    # bill like rent, not variable spending on its posting date.
                     month_fixed += -amt
                     fixed_categories["card_bills"] = fixed_categories.get("card_bills", 0) + (-amt)
                 elif cat in FIXED_CATEGORIES:

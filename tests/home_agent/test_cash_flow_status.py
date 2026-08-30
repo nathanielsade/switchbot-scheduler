@@ -198,6 +198,39 @@ def test_uncovered_card_bill_counted_as_fixed_not_variable():
     assert t["variable_spent"] == 0
 
 
+def test_covered_card_bill_excluded_from_fixed_no_double_count():
+    store = _store()
+    _seed_rules(store)
+    _seed_window(store)
+    _COVERED_CARD = "1743"      # Netanel's card: itemized on Max -> covered
+    _UNCOVERED_CARD = "6146"    # Saray's card: no Max detail -> un-itemized
+    _COVERED_BILL = 400_000     # bank-level lump bill for the covered card (must NOT count as fixed)
+    _UNCOVERED_BILL = 800_000   # bank-level lump bill for the uncovered card (must count as fixed)
+    _ITEMIZED_GROCERY = 150_000  # one itemized Max purchase behind the covered card's bill
+
+    # record_coverage upserts on (source, account) — one row per account, like the real nightly
+    # sync — so record ONE coverage span across the whole window (2026-04-01..2026-07-09), not a
+    # separate call per month (which would just overwrite itself and only "cover" the last month).
+    store.record_coverage("max", _COVERED_CARD, "2026-04-01", "2026-07-09", "2026-07-09T00:00:00")
+
+    for ym in ("2026-04", "2026-05", "2026-06"):
+        store.upsert_transactions([
+            _txn(f"חיוב לכרטיס ויזה {_COVERED_CARD}", -_COVERED_BILL, f"{ym}-20",
+                 source="discount", account="checking"),
+            _txn("שופרסל", -_ITEMIZED_GROCERY, f"{ym}-12", source="max", account=_COVERED_CARD),
+        ])
+        # Uncovered card: only the bank bill line, no coverage recorded -> stays fixed.
+        store.upsert_transactions([
+            _txn(f"חיוב לכרטיס ויזה {_UNCOVERED_CARD}", -_UNCOVERED_BILL, f"{ym}-15",
+                 source="discount", account="checking"),
+        ])
+
+    t = _cash_flow_terms(store, _frozen_mid_july)
+    # fixed must include ONLY the uncovered card's bill, never the covered card's bank bill.
+    assert t["fixed_categories"].get("card_bills") == _UNCOVERED_BILL * 3
+    assert t["fixed_expected"] == _RENT + _SUBSCRIPTIONS + _DEPOSIT + _UNCOVERED_BILL
+
+
 def test_start_of_month_and_overspent_no_clamp():
     store = _store()
     _seed_rules(store)
