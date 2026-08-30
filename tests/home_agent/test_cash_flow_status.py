@@ -202,14 +202,16 @@ def test_trailing_window_boundary():
     assert t["income_expected"] == _SALARY
 
 
-def test_uncovered_card_bill_counted_as_fixed_not_variable():
+def test_uncovered_card_bill_counted_as_variable_not_fixed():
     store = _store()
     _seed_rules(store)
     _seed_window(store)
-    _CARD_BILL = 800_000  # ~8,000 lump bill for an un-itemized ("6146") card
+    _CARD_BILL = 800_000  # ~8,000 lump bill for an un-itemized ("6146"/Saray) card
     # Un-itemized card-bill lines in each window month + this month. No record_coverage for
     # "6146" -> the card is NOT covered/itemized (per _spendable_rows Option A it's kept, not
-    # excluded), so its bill must count as FIXED (committed), never as this month's variable spend.
+    # excluded). Per the new policy, an un-itemized card is VARIABLE spending (not committed):
+    # window months no longer feed fixed_expected at all, and this month's bill counts toward
+    # variable_spent, labeled by cardholder.
     store.upsert_transactions([
         _txn("חיוב לכרטיס ויזה 6146", -_CARD_BILL, "2026-04-15"),
         _txn("חיוב לכרטיס ויזה 6146", -_CARD_BILL, "2026-05-15"),
@@ -217,25 +219,32 @@ def test_uncovered_card_bill_counted_as_fixed_not_variable():
         _txn("חיוב לכרטיס ויזה 6146", -_CARD_BILL, "2026-07-05"),
     ])
     t = _cash_flow_terms(store, _frozen_mid_july)
-    assert t["fixed_expected"] == _RENT + _SUBSCRIPTIONS + _DEPOSIT + _CARD_BILL
-    assert t["fixed_categories"].get("card_bills") == _CARD_BILL * 3
-    # this month's own card-bill lump must NOT leak into variable_spent
-    assert t["variable_spent"] == 0
+    # card bills no longer contribute to fixed_expected / fixed_categories at all.
+    assert t["fixed_expected"] == _RENT + _SUBSCRIPTIONS + _DEPOSIT
+    assert "card_bills" not in t["fixed_categories"]
+    # this month's own card-bill lump now counts as VARIABLE spending, labeled by cardholder.
+    assert t["variable_spent"] == _CARD_BILL
+    assert t["card_bill_categories"]["6146"] == _CARD_BILL
+
+    tools = build_finance_tools(store, now_fn=_frozen_mid_july)
+    out = _tool(tools, "cash_flow_status").impl({})
+    assert "כרטיס שרי" in out
+    assert _shekels(_CARD_BILL) in out
 
 
-def test_covered_card_bill_excluded_from_fixed_no_double_count():
+def test_covered_card_bill_excluded_uncovered_is_variable_labeled():
     store = _store()
     _seed_rules(store)
     _seed_window(store)
     _COVERED_CARD = "1743"      # Netanel's card: itemized on Max -> covered
     _UNCOVERED_CARD = "6146"    # Saray's card: no Max detail -> un-itemized
-    _COVERED_BILL = 400_000     # bank-level lump bill for the covered card (must NOT count as fixed)
-    _UNCOVERED_BILL = 800_000   # bank-level lump bill for the uncovered card (must count as fixed)
+    _COVERED_BILL = 400_000     # bank-level lump bill for the covered card (must NOT count anywhere)
+    _UNCOVERED_BILL = 800_000   # bank-level lump bill for the uncovered card (must count as variable)
     _ITEMIZED_GROCERY = 150_000  # one itemized Max purchase behind the covered card's bill
 
     # record_coverage upserts on (source, account) — one row per account, like the real nightly
-    # sync — so record ONE coverage span across the whole window (2026-04-01..2026-07-09), not a
-    # separate call per month (which would just overwrite itself and only "cover" the last month).
+    # sync — so record ONE coverage span across the whole window + this month (2026-04-01..
+    # 2026-07-09), not a separate call per month (which would just overwrite itself).
     store.record_coverage("max", _COVERED_CARD, "2026-04-01", "2026-07-09", "2026-07-09T00:00:00")
 
     for ym in ("2026-04", "2026-05", "2026-06"):
@@ -244,16 +253,33 @@ def test_covered_card_bill_excluded_from_fixed_no_double_count():
                  source="discount", account="checking"),
             _txn("שופרסל", -_ITEMIZED_GROCERY, f"{ym}-12", source="max", account=_COVERED_CARD),
         ])
-        # Uncovered card: only the bank bill line, no coverage recorded -> stays fixed.
+        # Uncovered card: only the bank bill line, no coverage recorded.
         store.upsert_transactions([
             _txn(f"חיוב לכרטיס ויזה {_UNCOVERED_CARD}", -_UNCOVERED_BILL, f"{ym}-15",
                  source="discount", account="checking"),
         ])
+    # This month (July): both cards bill again.
+    store.upsert_transactions([
+        _txn(f"חיוב לכרטיס ויזה {_COVERED_CARD}", -_COVERED_BILL, "2026-07-05",
+             source="discount", account="checking"),
+        _txn(f"חיוב לכרטיס ויזה {_UNCOVERED_CARD}", -_UNCOVERED_BILL, "2026-07-05",
+             source="discount", account="checking"),
+    ])
 
     t = _cash_flow_terms(store, _frozen_mid_july)
-    # fixed must include ONLY the uncovered card's bill, never the covered card's bank bill.
-    assert t["fixed_categories"].get("card_bills") == _UNCOVERED_BILL * 3
-    assert t["fixed_expected"] == _RENT + _SUBSCRIPTIONS + _DEPOSIT + _UNCOVERED_BILL
+    # fixed no longer has a card_bills bucket at all.
+    assert "card_bills" not in t["fixed_categories"]
+    assert t["fixed_expected"] == _RENT + _SUBSCRIPTIONS + _DEPOSIT
+    # covered card: dropped entirely (Option A) -> never in variable either.
+    assert _COVERED_CARD not in t["card_bill_categories"]
+    # uncovered card: this month's bill counts as variable, labeled by cardholder.
+    assert t["card_bill_categories"][_UNCOVERED_CARD] == _UNCOVERED_BILL
+    assert t["variable_spent"] == _UNCOVERED_BILL
+
+    tools = build_finance_tools(store, now_fn=_frozen_mid_july)
+    out = _tool(tools, "cash_flow_status").impl({})
+    assert "כרטיס שרי" in out
+    assert _shekels(_UNCOVERED_BILL) in out
 
 
 def test_start_of_month_and_overspent_no_clamp():

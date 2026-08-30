@@ -29,6 +29,16 @@ _PARTIAL_FLAG = "(פירוט הכרטיס אינו זמין לתקופה זו �
 # for a range that's only a few days stale. NOT meant to close a normal day-to-day gap — after a
 # successful nightly sync, coverage_end == today, so a same-day query is fully covered (gap = 0).
 _COVERAGE_GRACE_DAYS = 3
+# An un-itemized card's bank card-bill line is nobody's fixed commitment — it's variable spending
+# whose only distinguishing feature is which family member's card it is. Map card last-4 -> display
+# name for labeling that variable-spending line in cash_flow_status (spec: docs/superpowers/sdd/
+# c-1-saraycard-*). Unknown cards fall back to a generic "כרטיס NNNN" label.
+_CARD_HOLDERS = {"6146": "שרי"}
+
+
+def _card_bill_label(card4: str) -> str:
+    name = _CARD_HOLDERS.get(card4)
+    return f"כרטיס {name}" if name else f"כרטיס {card4}"
 
 
 def finance_configured(config) -> bool:
@@ -543,8 +553,9 @@ def _cash_flow_terms(store, now_fn) -> dict:
         # a card whose Max detail covers this window month is itemized (its purchases are
         # categorized individually below via the kept Max rows); its bank card-bill line is
         # dropped here so it never double-counts against those itemized rows. An UN-itemized
-        # card's bank bill-line IS kept (and folds into fixed below) since it's the only record
-        # of that spending. Income rows are unaffected — only card-bill lines are ever excluded.
+        # card's bank bill-line IS kept but ignored here (window months only feed fixed_expected,
+        # and un-itemized card spending is variable, not fixed — see the current-month calc
+        # below). Income rows are unaffected — only card-bill lines are ever excluded here.
         rows, _partial = _spendable_rows(store, start.isoformat(), month_end.isoformat())
         month_income = month_fixed = 0
         for row in rows:
@@ -559,14 +570,14 @@ def _cash_flow_terms(store, now_fn) -> dict:
                     month_income += amt
                     income_categories[cat] = income_categories.get(cat, 0) + amt
             elif amt < 0:
-                bill = _CARD_BILL_RE.search(_norm_desc(row["description"]))
-                if bill:
+                if _CARD_BILL_RE.search(_norm_desc(row["description"])):
                     # a bill line surviving _spendable_rows can only belong to an un-itemized
-                    # card (a covered card's bill was already dropped above): a committed monthly
-                    # bill like rent, not variable spending on its posting date.
-                    month_fixed += -amt
-                    fixed_categories["card_bills"] = fixed_categories.get("card_bills", 0) + (-amt)
-                elif cat == "rent":
+                    # card (a covered card's bill was already dropped above). Un-itemized card
+                    # spending is now VARIABLE, not a committed monthly bill — it never feeds
+                    # fixed_expected/fixed_categories at all; see the current-month calc below
+                    # for how it counts toward variable_spent instead.
+                    continue
+                if cat == "rent":
                     # Kept OUT of month_fixed (the per-calendar-month sum): rent's monthly figure
                     # is derived separately below from the median individual payment, not from
                     # summing-then-medianing per calendar month. Still tracked in
@@ -590,12 +601,20 @@ def _cash_flow_terms(store, now_fn) -> dict:
 
     rows_this_month, partial_flag = _spendable_rows(store, this_month_start.isoformat(), today.isoformat())
     variable_spent = 0
+    card_bill_categories = {}
     for row in rows_this_month:
         amt = row["amount_agorot"]
         if amt >= 0:
             continue
-        if _CARD_BILL_RE.search(_norm_desc(row["description"])):
-            continue  # un-itemized card's bill: committed (folded into fixed_expected), never variable
+        bill = _CARD_BILL_RE.search(_norm_desc(row["description"]))
+        if bill:
+            # a bill line surviving _spendable_rows can only belong to an un-itemized card (a
+            # covered card's bill was already dropped): its spending is VARIABLE, labeled by
+            # cardholder (_CARD_HOLDERS) rather than lumped into a generic "card_bills" bucket.
+            card4 = _card4(bill.group(2))
+            card_bill_categories[card4] = card_bill_categories.get(card4, 0) + (-amt)
+            variable_spent += -amt
+            continue
         cat = _categorize(row["description"], rules)
         if cat in FIXED_CATEGORIES or cat == TRANSFER_CATEGORY:
             continue  # this month's own fixed/transfer payments aren't "variable"
@@ -618,6 +637,7 @@ def _cash_flow_terms(store, now_fn) -> dict:
         "window_months": window_months,
         "income_categories": income_categories,
         "fixed_categories": fixed_categories,
+        "card_bill_categories": card_bill_categories,
         "uncategorized_income_agorot": uncategorized_income_agorot,
         "partial_flag": partial_flag,
     }
@@ -634,6 +654,8 @@ def _cash_flow_status_impl(args, *, store, now_fn) -> str:
     lines.append(f"הכנסה חודשית צפויה (חציון 3 חודשים מלאים): {_shekels(t['income_expected'])}")
     lines.append(f"הוצאות קבועות צפויות (שכירות/חשבונות/מנויים + חיסכון מחויב): {_shekels(t['fixed_expected'])}")
     lines.append(f"הוצאות משתנות עד כה החודש: {_shekels(t['variable_spent'])}")
+    for card4, amt in sorted(t["card_bill_categories"].items(), key=lambda kv: -kv[1]):
+        lines.append(f"{_card_bill_label(card4)}: {_shekels(amt)}")
     lines.append(f"נשאר להוציא החודש: {_shekels(t['safe_to_spend'])} (~{_shekels(t['weekly'])} לשבוע)")
     if t["partial_flag"]:
         lines.append(_PARTIAL_FLAG)
