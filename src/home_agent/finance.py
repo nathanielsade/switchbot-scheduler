@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import statistics
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -13,6 +14,11 @@ log = logging.getLogger("home_agent")
 CATEGORIES = ("groceries", "rent", "salary", "utilities", "transport", "health",
               "restaurants", "subscriptions", "shopping", "cash", "transfer", "other")
 
+# cash_flow_status classification (v2.1, category-driven — see docs/superpowers/sdd/c-1-plan.md).
+# Fixed = committed monthly outflow: named categories + committed savings/gmal (transfer negatives).
+FIXED_CATEGORIES = frozenset({"rent", "utilities", "subscriptions"})
+TRANSFER_CATEGORY = "transfer"
+
 _WS = re.compile(r"\s+")
 _CARD_BILL_RE = re.compile(r"(חיוב|זיכוי)\s+לכרטיס\s+ויזה\s+(\d+)")
 # Appended by spend tools when a card's itemized data isn't available for the range and we fall
@@ -23,6 +29,16 @@ _PARTIAL_FLAG = "(פירוט הכרטיס אינו זמין לתקופה זו �
 # for a range that's only a few days stale. NOT meant to close a normal day-to-day gap — after a
 # successful nightly sync, coverage_end == today, so a same-day query is fully covered (gap = 0).
 _COVERAGE_GRACE_DAYS = 3
+# An un-itemized card's bank card-bill line is nobody's fixed commitment — it's variable spending
+# whose only distinguishing feature is which family member's card it is. Map card last-4 -> display
+# name for labeling that variable-spending line in cash_flow_status (spec: docs/superpowers/sdd/
+# c-1-saraycard-*). Unknown cards fall back to a generic "כרטיס NNNN" label.
+_CARD_HOLDERS = {"6146": "שרי"}
+
+
+def _card_bill_label(card4: str) -> str:
+    name = _CARD_HOLDERS.get(card4)
+    return f"כרטיס {name}" if name else f"כרטיס {card4}"
 
 
 def finance_configured(config) -> bool:
@@ -476,6 +492,184 @@ def _forecast_impl(args, *, store, now_fn) -> str:
     return "\n".join(lines)
 
 
+def _month_start(d):
+    return d.replace(day=1)
+
+
+def _prev_month_start(d):
+    return (_month_start(d) - timedelta(days=1)).replace(day=1)
+
+
+def _month_end(start):
+    nxt = start.replace(year=start.year + 1, month=1, day=1) if start.month == 12 \
+        else start.replace(month=start.month + 1, day=1)
+    return nxt - timedelta(days=1)
+
+
+_CASH_FLOW_STATUS_SCHEMA = {"type": "function", "function": {
+    "name": "cash_flow_status",
+    "description": (
+        "Use for 'how much is safe/left to spend this month or this week', budget-remaining, or "
+        "'can we afford X' questions. Computes expected income and fixed costs from the last few full "
+        "months' medians, this month's variable spend so far, and what's left to spend this month and "
+        "per week — with a transparency breakdown of what counted as income/fixed. Do NOT use "
+        "financial_summary or cash_flow_forecast for this. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+
+def _cash_flow_terms(store, now_fn) -> dict:
+    """Pure (besides store reads), testable core of cash_flow_status. See
+    docs/superpowers/sdd/c-1-plan.md 'Decisions (locked)' for the exact rules this encodes:
+    income/fixed are MEDIANS over the last 3 FULL completed calendar months, classified by
+    canonical category name (never Hebrew text); uncategorized positives are fail-safe EXCLUDED
+    from income (and flagged); variable_spent is this month's actual non-fixed, non-transfer spend."""
+    today = now_fn().date()
+    this_month_start = _month_start(today)
+
+    m3 = _prev_month_start(this_month_start)  # most recent full month
+    m2 = _prev_month_start(m3)
+    m1 = _prev_month_start(m2)
+    window_starts = [m1, m2, m3]  # oldest -> newest
+
+    rules = store.active_rules()
+    income_by_month, fixed_by_month = [], []
+    income_categories, fixed_categories = {}, {}
+    uncategorized_income_agorot = 0
+    window_months = []
+    # Rent is a once-a-month bill of a stable amount, but the individual checks land on
+    # irregular dates that can skip a calendar month within the window (e.g. a check on the
+    # 31st, then the next on the 1st of the month-after-next -> the month in between gets none).
+    # Summing rent PER CALENDAR MONTH and then medianing those monthly sums undercounts rent
+    # whenever the checks don't land one-per-window-month. Instead, collect the individual rent
+    # PAYMENT amounts across the whole window (irrespective of which month each lands in) and use
+    # their median as rent's monthly contribution below — robust to the calendar-month skew.
+    rent_payments_agorot = []
+
+    for start in window_starts:
+        window_months.append(start.strftime("%Y-%m"))
+        month_end = _month_end(start)
+        # Option A (same helper the current-month variable calc uses, see _spendable_rows):
+        # a card whose Max detail covers this window month is itemized (its purchases are
+        # categorized individually below via the kept Max rows); its bank card-bill line is
+        # dropped here so it never double-counts against those itemized rows. An UN-itemized
+        # card's bank bill-line IS kept but ignored here (window months only feed fixed_expected,
+        # and un-itemized card spending is variable, not fixed — see the current-month calc
+        # below). Income rows are unaffected — only card-bill lines are ever excluded here.
+        rows, _partial = _spendable_rows(store, start.isoformat(), month_end.isoformat())
+        month_income = month_fixed = 0
+        for row in rows:
+            amt = row["amount_agorot"]
+            cat = _categorize(row["description"], rules)
+            if amt > 0:
+                if cat is None:
+                    uncategorized_income_agorot += amt  # fail-safe: excluded from income, flagged
+                elif cat == TRANSFER_CATEGORY:
+                    continue  # own money returning (savings withdrawal) -> not income
+                else:
+                    month_income += amt
+                    income_categories[cat] = income_categories.get(cat, 0) + amt
+            elif amt < 0:
+                if _CARD_BILL_RE.search(_norm_desc(row["description"])):
+                    # a bill line surviving _spendable_rows can only belong to an un-itemized
+                    # card (a covered card's bill was already dropped above). Un-itemized card
+                    # spending is now VARIABLE, not a committed monthly bill — it never feeds
+                    # fixed_expected/fixed_categories at all; see the current-month calc below
+                    # for how it counts toward variable_spent instead.
+                    continue
+                if cat == "rent":
+                    # Kept OUT of month_fixed (the per-calendar-month sum): rent's monthly figure
+                    # is derived separately below from the median individual payment, not from
+                    # summing-then-medianing per calendar month. Still tracked in
+                    # fixed_categories for the transparency breakdown.
+                    rent_payments_agorot.append(-amt)
+                    fixed_categories["rent"] = fixed_categories.get("rent", 0) + (-amt)
+                elif cat in FIXED_CATEGORIES:
+                    month_fixed += -amt
+                    fixed_categories[cat] = fixed_categories.get(cat, 0) + (-amt)
+                elif cat == TRANSFER_CATEGORY:
+                    month_fixed += -amt  # committed savings/gmal deposit
+                    fixed_categories[TRANSFER_CATEGORY] = fixed_categories.get(TRANSFER_CATEGORY, 0) + (-amt)
+        income_by_month.append(month_income)
+        fixed_by_month.append(month_fixed)
+
+    income_expected = int(statistics.median(income_by_month))
+    non_rent_fixed_expected = int(statistics.median(fixed_by_month))
+    rent_expected = int(statistics.median(rent_payments_agorot)) if rent_payments_agorot else 0
+    fixed_expected = non_rent_fixed_expected + rent_expected
+    assert isinstance(income_expected, int) and isinstance(fixed_expected, int)
+
+    rows_this_month, partial_flag = _spendable_rows(store, this_month_start.isoformat(), today.isoformat())
+    variable_spent = 0
+    card_bill_categories = {}
+    for row in rows_this_month:
+        amt = row["amount_agorot"]
+        if amt >= 0:
+            continue
+        bill = _CARD_BILL_RE.search(_norm_desc(row["description"]))
+        if bill:
+            # a bill line surviving _spendable_rows can only belong to an un-itemized card (a
+            # covered card's bill was already dropped): its spending is VARIABLE, labeled by
+            # cardholder (_CARD_HOLDERS) rather than lumped into a generic "card_bills" bucket.
+            card4 = _card4(bill.group(2))
+            card_bill_categories[card4] = card_bill_categories.get(card4, 0) + (-amt)
+            variable_spent += -amt
+            continue
+        cat = _categorize(row["description"], rules)
+        if cat in FIXED_CATEGORIES or cat == TRANSFER_CATEGORY:
+            continue  # this month's own fixed/transfer payments aren't "variable"
+        variable_spent += -amt
+
+    safe_to_spend = income_expected - fixed_expected - variable_spent
+    days_left = (_month_end(this_month_start) - today).days + 1  # inclusive of today
+    weeks_left = max(1, -(-days_left // 7))  # ceil(days_left/7), min 1
+    weekly = safe_to_spend // weeks_left
+    assert isinstance(weekly, int)
+
+    return {
+        "income_expected": income_expected,
+        "fixed_expected": fixed_expected,
+        "variable_spent": variable_spent,
+        "safe_to_spend": safe_to_spend,
+        "weeks_left": weeks_left,
+        "weekly": weekly,
+        "days_left": days_left,
+        "window_months": window_months,
+        "income_categories": income_categories,
+        "fixed_categories": fixed_categories,
+        "card_bill_categories": card_bill_categories,
+        "uncategorized_income_agorot": uncategorized_income_agorot,
+        "partial_flag": partial_flag,
+    }
+
+
+def _cash_flow_status_impl(args, *, store, now_fn) -> str:
+    t = _cash_flow_terms(store, now_fn)
+    lines = []
+    if t["uncategorized_income_agorot"]:
+        lines.append(
+            f"⚠️ נמצאו זיכויים ללא קטגוריה בסך {_shekels(t['uncategorized_income_agorot'])} בחודשי הבדיקה "
+            "— לא נספרו כהכנסה (שמרני, כדי לא לנפח את הסכום הפנוי). מומלץ להוסיף כלל קטגוריה עבורם."
+        )
+    lines.append(f"הכנסה חודשית צפויה (חציון 3 חודשים מלאים): {_shekels(t['income_expected'])}")
+    lines.append(f"הוצאות קבועות צפויות (שכירות/חשבונות/מנויים + חיסכון מחויב): {_shekels(t['fixed_expected'])}")
+    lines.append(f"הוצאות משתנות עד כה החודש: {_shekels(t['variable_spent'])}")
+    for card4, amt in sorted(t["card_bill_categories"].items(), key=lambda kv: -kv[1]):
+        lines.append(f"{_card_bill_label(card4)}: {_shekels(amt)}")
+    lines.append(f"נשאר להוציא החודש: {_shekels(t['safe_to_spend'])} (~{_shekels(t['weekly'])} לשבוע)")
+    if t["partial_flag"]:
+        lines.append(_PARTIAL_FLAG)
+    lines.append("שקיפות — חודשים שנבדקו: " + ", ".join(t["window_months"]))
+    if t["income_categories"]:
+        lines.append("נספר כהכנסה: " + ", ".join(
+            f"{c} {_shekels(v)}" for c, v in sorted(t["income_categories"].items(), key=lambda kv: -kv[1])))
+    if t["fixed_categories"]:
+        lines.append("נספר כקבוע: " + ", ".join(
+            f"{c} {_shekels(v)}" for c, v in sorted(t["fixed_categories"].items(), key=lambda kv: -kv[1])))
+    lines.append("הערה: כסף שנמשך מהחיסכון החודש אינו מתווסף אוטומטית לסכום הפנוי.")
+    return "\n".join(lines)
+
+
 def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
     now_fn = now_fn or _now
     fetch_fns = fetch_fns or {}
@@ -498,6 +692,8 @@ def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
              impl=lambda a: _del_rule_impl(a, store=store)),
         Tool(name="cash_flow_forecast", schema=_FORECAST_SCHEMA,
              impl=lambda a: _forecast_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="cash_flow_status", schema=_CASH_FLOW_STATUS_SCHEMA,
+             impl=lambda a: _cash_flow_status_impl(a, store=store, now_fn=now_fn)),
     ]
 
 
