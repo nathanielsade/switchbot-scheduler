@@ -164,6 +164,29 @@ class FinanceStore:
                 [(f,) for f in fingerprints])
             conn.commit()
 
+    def has_alerts_recorded(self) -> bool:
+        """True iff finance_alerts_sent has at least one row — used to gate the one-time
+        cold-start seeding (see seed_alerts_baseline) so it never re-seeds an already-active
+        install."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            return conn.execute("SELECT 1 FROM finance_alerts_sent LIMIT 1").fetchone() is not None
+
+    def seed_alerts_baseline(self, threshold_agorot):
+        """Mark every CURRENT expense row at/beyond threshold_agorot as already-alerted, WITHOUT
+        returning them or sending anything. Meant to be called exactly once, at first activation
+        (see has_alerts_recorded), so a fresh box doesn't flood the family group with every
+        historical large charge — only genuinely new ones (arriving after this call) surface via
+        unalerted_large/find_new_large_charges. Idempotent (INSERT OR IGNORE) so a repeat call is
+        harmless."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT fingerprint FROM transactions WHERE amount_agorot <= ?",
+                (-abs(threshold_agorot),)).fetchall()
+            if rows:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO finance_alerts_sent (fingerprint) VALUES (?)", rows)
+                conn.commit()
+
     def unalerted_large(self, threshold_agorot, since=None):
         """Expense transactions at/beyond threshold_agorot (absolute value) that have no row yet
         in finance_alerts_sent — i.e. not-yet-alerted "unusual" charges. `since` (YYYY-MM-DD),

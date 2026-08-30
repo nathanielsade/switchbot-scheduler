@@ -52,10 +52,13 @@ def test_build_month_recap_totals_and_categories():
     assert text is not None
     assert "2026-07" in text
     assert "870.00" in text  # total expense = 450+120+300 = 870
-    assert "groceries" in text
+    assert "מכולת" in text  # groceries, Hebrew label
     assert "570.00" in text  # groceries category total (450 + 120)
-    assert "transport" in text
+    assert "תחבורה" in text  # transport, Hebrew label
     assert "300.00" in text  # transport category total
+    # Raw English enum values must never leak into the Hebrew message.
+    assert "groceries" not in text
+    assert "transport" not in text
 
 
 def test_build_month_recap_returns_none_when_no_data():
@@ -79,8 +82,11 @@ def test_build_weekly_summary_month_to_date():
     text = build_weekly_summary(store, _now())  # MTD through Aug 30
 
     assert "350.00" in text  # 200 + 100 + 50
-    assert "groceries" in text
-    assert "transport" in text
+    assert "מכולת" in text  # groceries, Hebrew label
+    assert "תחבורה" in text  # transport, Hebrew label
+    # Raw English enum values must never leak into the Hebrew message.
+    assert "groceries" not in text
+    assert "transport" not in text
 
 
 def test_build_weekly_summary_handles_no_spending_yet():
@@ -118,3 +124,45 @@ def test_build_charge_alert_text():
     text = build_charge_alert(rows)
     assert "2,000.00" in text
     assert "רהיטים" in text
+
+
+# --- 4. cold-start seeding ---------------------------------------------------
+
+def test_seed_alerts_baseline_suppresses_backfill_but_not_new_charges():
+    store = _store()
+    store.upsert_transactions([
+        _row("discount", "checking", -200000, "רהיטים", "2026-01-10"),
+        _row("discount", "checking", -300000, "ריהוט", "2026-02-10"),
+    ])
+    threshold = 150000
+
+    store.seed_alerts_baseline(threshold)
+
+    # First activation: every pre-existing large charge is seeded, not alerted.
+    assert find_new_large_charges(store, threshold) == []
+
+    # A genuinely new large charge arriving afterwards DOES alert.
+    store.upsert_transactions([
+        _row("discount", "checking", -250000, "מחשבים", "2026-08-25"),
+    ])
+    result = find_new_large_charges(store, threshold)
+    assert len(result) == 1
+    assert result[0]["description"] == "מחשבים"
+
+
+# --- 5. card-bill exclusion --------------------------------------------------
+
+def test_card_bill_excluded_from_unusual_charge_alerts():
+    store = _store()
+    store.upsert_transactions([
+        _row("discount", "checking", -500000, "חיוב לכרטיס ויזה 1743", "2026-08-10"),
+        _row("discount", "checking", -200000, "רהיטים", "2026-08-11"),
+    ])
+    threshold = 150000
+
+    result = find_new_large_charges(store, threshold)
+
+    descriptions = [r["description"] for r in result]
+    assert "רהיטים" in descriptions
+    assert not any("כרטיס" in d for d in descriptions)
+    assert len(result) == 1
