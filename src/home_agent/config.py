@@ -13,7 +13,6 @@ DEFAULT_COLLECTOR_SCRIPT = "collector/scrape_discount.js"
 DEFAULT_MAX_COLLECTOR_SCRIPT = "collector/scrape_max.js"
 DEFAULT_FINANCE_START_DAYS = 400
 DEFAULT_FINANCE_SYNC_HOUR = 5
-DEFAULT_FINANCE_ALERT_THRESHOLD_AGOROT = 150000  # ₪1,500
 
 
 @dataclass
@@ -43,7 +42,6 @@ class Config:
     finance_start_days: int = DEFAULT_FINANCE_START_DAYS
     finance_sync_hour: int = DEFAULT_FINANCE_SYNC_HOUR
     finance_nudge_chat_id: int | None = None
-    finance_alert_threshold_agorot: int = DEFAULT_FINANCE_ALERT_THRESHOLD_AGOROT
     switchbot_token: str = ""
     switchbot_secret: str = ""
     home_tz: str = "Asia/Jerusalem"
@@ -96,8 +94,6 @@ def load_config(path: str | None = None) -> Config:
         finance_sync_hour=int(os.environ.get("FINANCE_SYNC_HOUR", str(DEFAULT_FINANCE_SYNC_HOUR))),
         finance_nudge_chat_id=(int(os.environ["FINANCE_NUDGE_CHAT_ID"])
                                 if os.environ.get("FINANCE_NUDGE_CHAT_ID") else None),
-        finance_alert_threshold_agorot=int(os.environ.get(
-            "FINANCE_ALERT_THRESHOLD_AGOROT", str(DEFAULT_FINANCE_ALERT_THRESHOLD_AGOROT))),
         switchbot_token=os.environ.get("SWITCHBOT_TOKEN", ""),
         switchbot_secret=os.environ.get("SWITCHBOT_SECRET", ""),
         home_tz=os.environ.get("HOME_TZ", "Asia/Jerusalem"),

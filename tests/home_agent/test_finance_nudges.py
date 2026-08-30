@@ -7,12 +7,7 @@ import os
 import tempfile
 from datetime import datetime
 
-from home_agent.finance_nudges import (
-    build_charge_alert,
-    build_month_recap,
-    build_weekly_summary,
-    find_new_large_charges,
-)
+from home_agent.finance_nudges import build_month_recap, build_weekly_summary
 from home_agent.finance_store import FinanceStore
 
 
@@ -94,75 +89,3 @@ def test_build_weekly_summary_handles_no_spending_yet():
     text = build_weekly_summary(store, _now())
     assert isinstance(text, str) and text.strip()
     assert "0.00" in text
-
-
-# --- 3. unusual-charge detection --------------------------------------------
-
-def test_find_new_large_charges_flags_only_big_ones_and_does_not_repeat():
-    store = _store()
-    store.upsert_transactions([
-        _row("discount", "checking", -200000, "רהיטים", "2026-08-10"),  # ₪2,000 — big
-        _row("discount", "checking", -5000, "שופרסל", "2026-08-11"),    # ₪50 — small
-        _row("discount", "checking", -140000, "טיסה", "2026-08-12"),    # ₪1,400 — below ₪1,500 threshold
-    ])
-
-    threshold = 150000  # ₪1,500
-
-    first = find_new_large_charges(store, threshold)
-    assert len(first) == 1
-    assert first[0]["description"] == "רהיטים"
-    assert first[0]["amount_agorot"] == -200000
-
-    # Running again with the same store: the fingerprint is now marked alerted -> nothing new.
-    second = find_new_large_charges(store, threshold)
-    assert second == []
-
-
-def test_build_charge_alert_text():
-    rows = [{"source": "discount", "account": "checking", "fingerprint": "x",
-             "txn_date": "2026-08-10", "amount_agorot": -200000, "description": "רהיטים"}]
-    text = build_charge_alert(rows)
-    assert "2,000.00" in text
-    assert "רהיטים" in text
-
-
-# --- 4. cold-start seeding ---------------------------------------------------
-
-def test_seed_alerts_baseline_suppresses_backfill_but_not_new_charges():
-    store = _store()
-    store.upsert_transactions([
-        _row("discount", "checking", -200000, "רהיטים", "2026-01-10"),
-        _row("discount", "checking", -300000, "ריהוט", "2026-02-10"),
-    ])
-    threshold = 150000
-
-    store.seed_alerts_baseline(threshold)
-
-    # First activation: every pre-existing large charge is seeded, not alerted.
-    assert find_new_large_charges(store, threshold) == []
-
-    # A genuinely new large charge arriving afterwards DOES alert.
-    store.upsert_transactions([
-        _row("discount", "checking", -250000, "מחשבים", "2026-08-25"),
-    ])
-    result = find_new_large_charges(store, threshold)
-    assert len(result) == 1
-    assert result[0]["description"] == "מחשבים"
-
-
-# --- 5. card-bill exclusion --------------------------------------------------
-
-def test_card_bill_excluded_from_unusual_charge_alerts():
-    store = _store()
-    store.upsert_transactions([
-        _row("discount", "checking", -500000, "חיוב לכרטיס ויזה 1743", "2026-08-10"),
-        _row("discount", "checking", -200000, "רהיטים", "2026-08-11"),
-    ])
-    threshold = 150000
-
-    result = find_new_large_charges(store, threshold)
-
-    descriptions = [r["description"] for r in result]
-    assert "רהיטים" in descriptions
-    assert not any("כרטיס" in d for d in descriptions)
-    assert len(result) == 1

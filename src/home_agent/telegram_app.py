@@ -11,12 +11,7 @@ from .calendar_pending import CalendarPending
 from .config import max_configured
 from .facts import FactStore, build_memory_tools
 from .finance import build_finance_tools, finance_configured, make_collector_fetch, run_finance_sync
-from .finance_nudges import (
-    build_charge_alert,
-    build_month_recap,
-    build_weekly_summary,
-    find_new_large_charges,
-)
+from .finance_nudges import build_month_recap, build_weekly_summary
 from .finance_store import FinanceStore
 from .gcal import build_calendar_tools, load_calendar_service
 from .home import build_home_tools, load_registry
@@ -168,13 +163,6 @@ def build_application(config, *, client=None, conversation=None, send_fn=None):
         if max_configured(config):
             fetch_fns["max"] = make_collector_fetch(config, "max")
         finance_store = FinanceStore(config.db_path)
-        # Cold-start seeding (D-1 fix): on a fresh box (finance_alerts_sent empty), mark every
-        # currently-existing large charge as already-seen WITHOUT alerting on it, so activating
-        # nudges never floods the group with the entire transaction history at once — only
-        # genuinely NEW large charges from here on will alert. Idempotent + gated so an
-        # already-seeded box is unaffected on every subsequent restart.
-        if not finance_store.has_alerts_recorded():
-            finance_store.seed_alerts_baseline(config.finance_alert_threshold_agorot)
         tools += build_finance_tools(finance_store, fetch_fns=fetch_fns)
         if app.job_queue is not None:
             nudge_chat_id = _resolve_nudge_chat_id(config)
@@ -187,16 +175,6 @@ def build_application(config, *, client=None, conversation=None, send_fn=None):
                     log.info("nightly finance sync: %s", result)
                 except Exception as e:
                     log.warning("nightly finance sync failed: %s", e)
-                    return
-                # Unusual-charge alert piggybacks HERE (synchronously, after the sync completes)
-                # rather than as a separate job — race-free against the data it scans (plan D-1).
-                if nudge_chat_id is not None:
-                    try:
-                        large = find_new_large_charges(finance_store, config.finance_alert_threshold_agorot)
-                        if large:
-                            await asyncio.to_thread(send_fn, nudge_chat_id, build_charge_alert(large))
-                    except Exception as e:
-                        log.warning("unusual-charge scan failed: %s", e)
             app.job_queue.run_daily(
                 _nightly_finance_sync,
                 time=dtime(config.finance_sync_hour, 0, tzinfo=ZoneInfo(config.home_tz)),

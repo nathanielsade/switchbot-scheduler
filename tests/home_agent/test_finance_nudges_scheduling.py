@@ -94,39 +94,3 @@ def test_weekly_summary_callback_uses_injected_send_fn(tmp_path, monkeypatch, ma
     chat_id, text = sent[0]
     assert chat_id == 1  # resolved from the single ALLOWED_CHAT_IDS entry
     assert isinstance(text, str) and text.strip()
-
-
-def test_nightly_sync_scans_for_unusual_charges_via_send_fn(tmp_path, monkeypatch, make_fake_client):
-    import home_agent.telegram_app as ta
-
-    big_contract = contract(accounts=[{
-        "account": "1", "balance": "1200.50",
-        "transactions": [
-            {"identifier": "BIG1", "date": "2026-07-01T00:00:00.000Z", "processedDate": None,
-             "chargedAmount": "-2000.00", "chargedCurrency": "ILS", "description": "רהיטים",
-             "status": "completed"},
-        ],
-    }])
-
-    sent = []
-
-    def fake_send(chat_id, text):
-        sent.append((chat_id, text))
-
-    from home_agent.memory import Conversation
-    cfg = _finance_config(tmp_path, discount_id="1", discount_password="p", discount_num="9")
-    monkeypatch.setattr(ta, "make_collector_fetch", lambda cfg, source="discount": (lambda: big_contract))
-    app = ta.build_application(cfg, client=make_fake_client([]),
-                               conversation=Conversation(str(tmp_path / "m.db")), send_fn=fake_send)
-
-    job = app.job_queue.get_jobs_by_name("finance-sync")[0]
-    asyncio.run(job.callback(None))
-
-    assert len(sent) == 1
-    assert "רהיטים" in sent[0][1]
-    assert "2,000.00" in sent[0][1]
-
-    # Running the same nightly sync again must NOT re-alert the same charge.
-    sent.clear()
-    asyncio.run(job.callback(None))
-    assert sent == []

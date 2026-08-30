@@ -7,7 +7,7 @@ helpers (_spendable_rows / _categorize / _period_range / _shekels) rather than r
 logic, so a nudge can never diverge from what financial_summary/spending_by_category report —
 see docs/superpowers/sdd/d-1-plan.md.
 """
-from .finance import CATEGORIES, _CARD_BILL_RE, _categorize, _norm_desc, _period_range, _shekels, _spendable_rows
+from .finance import CATEGORIES, _categorize, _period_range, _shekels, _spendable_rows
 
 _TOP_CATEGORIES = 3
 
@@ -25,13 +25,6 @@ assert set(CATEGORIES) <= set(_CATEGORY_HE)
 
 def _category_label(cat):
     return _CATEGORY_HE.get(cat, cat)
-
-
-def _is_card_bill(description):
-    """True iff description is a routine bank card-bill line (e.g. 'חיוב לכרטיס ויזה 1743') —
-    those are monthly bills, never an "unusual charge"; reuses finance.py's own matcher so this
-    can never diverge from how finance.py itself recognizes card bills."""
-    return bool(_CARD_BILL_RE.search(_norm_desc(description)))
 
 
 def _category_breakdown(rows, store):
@@ -74,29 +67,4 @@ def build_weekly_summary(store, now):
         top = sorted(totals.items(), key=lambda kv: kv[1])[:_TOP_CATEGORIES]
         lines.append("קטגוריות מובילות: " + ", ".join(
             f"{_category_label(c)} {_shekels(-amt)}" for c, amt in top))
-    return "\n".join(lines)
-
-
-def find_new_large_charges(store, threshold_agorot):
-    """Expense transactions at/beyond threshold_agorot (absolute value) not yet alerted on.
-    Idempotent via FinanceStore's fingerprint-keyed finance_alerts_sent table (not a date
-    cursor): as a side effect, any rows returned are immediately marked alerted, so a second
-    call over the same data — e.g. the next nightly sync — returns nothing for them. This is
-    the one place in this module with a store side effect; the callers (the nightly-sync job
-    callback) rely on that to avoid re-alerting the same charge.
-
-    Routine bank card-bill lines (e.g. "חיוב לכרטיס ויזה 1743") are excluded — those are monthly
-    bills, never an "unusual charge" — and are deliberately left OUT of finance_alerts_sent (not
-    marked), since they were never alert candidates in the first place."""
-    rows = [r for r in store.unalerted_large(threshold_agorot) if not _is_card_bill(r["description"])]
-    if rows:
-        store.mark_alerted([r["fingerprint"] for r in rows])
-    return rows
-
-
-def build_charge_alert(rows):
-    """Format one heads-up message listing every newly-detected large charge."""
-    lines = ["חיוב חריג:"]
-    for r in rows:
-        lines.append(f"  {_shekels(-r['amount_agorot'])} ב{r['description']} ({r['txn_date']})")
     return "\n".join(lines)
