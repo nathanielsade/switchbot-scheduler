@@ -11,6 +11,7 @@ from .calendar_pending import CalendarPending
 from .config import max_configured
 from .facts import FactStore, build_memory_tools
 from .finance import build_finance_tools, finance_configured, make_collector_fetch, run_finance_sync
+from .finance_nudges import build_month_recap, build_weekly_summary
 from .finance_store import FinanceStore
 from .gcal import build_calendar_tools, load_calendar_service
 from .home import build_home_tools, load_registry
@@ -90,9 +91,25 @@ def handle_message(chat_id, text, *, config, conversation, client,
     return reply
 
 
-def build_application(config, *, client=None, conversation=None):
-    """Build the long-poll Telegram Application. Injectable client/conversation for tests
-    (no network is touched until .run_polling())."""
+def _resolve_nudge_chat_id(config):
+    """Target chat for proactive finance nudges: the explicit override if set, else the single
+    ALLOWED_CHAT_IDS entry when there's exactly one; None (+ a warning) if none/ambiguous, so a
+    nudge job never picks a chat by accident."""
+    if config.finance_nudge_chat_id:
+        return config.finance_nudge_chat_id
+    if len(config.allowed_chat_ids) == 1:
+        return next(iter(config.allowed_chat_ids))
+    log.warning("finance nudges: cannot resolve a target chat (set FINANCE_NUDGE_CHAT_ID, or "
+                "configure exactly one ALLOWED_CHAT_IDS entry) — nudges will not be sent")
+    return None
+
+
+def build_application(config, *, client=None, conversation=None, send_fn=None):
+    """Build the long-poll Telegram Application. Injectable client/conversation/send_fn for tests
+    (no network is touched until .run_polling()).
+    `send_fn(chat_id, text)` is the seam proactive nudges (finance recaps/summaries) send through —
+    mirroring cloud_send_fn/actuate_fn, it's a plain sync callable; job callbacks invoke it via
+    `asyncio.to_thread` (never `context.bot` directly), so `job.callback(None)` works in tests."""
     if client is None:
         from openai import OpenAI
         # Cap a hung request at config.openai_timeout instead of the SDK's 600s default, so a
@@ -106,6 +123,13 @@ def build_application(config, *, client=None, conversation=None):
 
     # Create the Application first so app.job_queue exists for the box-side cloud scheduler.
     app = Application.builder().token(config.telegram_bot_token).build()
+
+    if send_fn is None:
+        # Production default: a plain sync callable (like cloud_send_fn) that job callbacks
+        # await via asyncio.to_thread — never `context.bot` directly (context is None in tests).
+        def send_fn(chat_id, text):
+            import asyncio as _asyncio
+            _asyncio.run(app.bot.send_message(chat_id=chat_id, text=text))
 
     # SwitchBot Cloud seams for out-of-BLE-range devices (e.g. the garden). None -> cloud disabled.
     cloud_send_fn = cloud_battery_fn = scheduler = None
@@ -141,6 +165,8 @@ def build_application(config, *, client=None, conversation=None):
         finance_store = FinanceStore(config.db_path)
         tools += build_finance_tools(finance_store, fetch_fns=fetch_fns)
         if app.job_queue is not None:
+            nudge_chat_id = _resolve_nudge_chat_id(config)
+
             async def _nightly_finance_sync(context=None):
                 # Never crash the bot: run_finance_sync already per-source try/excepts; this is
                 # a last-resort net for anything that escapes it (e.g. a lock/IO error).
@@ -153,6 +179,35 @@ def build_application(config, *, client=None, conversation=None):
                 _nightly_finance_sync,
                 time=dtime(config.finance_sync_hour, 0, tzinfo=ZoneInfo(config.home_tz)),
                 name="finance-sync")
+
+            async def _month_recap_job(context=None):
+                try:  # never crash the bot on a nudge failure (matches _nightly_finance_sync)
+                    now = datetime.now(ZoneInfo(config.home_tz))
+                    if now.day != 2 or nudge_chat_id is None:
+                        return
+                    text = build_month_recap(finance_store, now)
+                    if text:
+                        await asyncio.to_thread(send_fn, nudge_chat_id, text)
+                except Exception as e:
+                    log.warning("month-recap nudge failed: %s", e)
+            app.job_queue.run_daily(
+                _month_recap_job, time=dtime(9, 0, tzinfo=ZoneInfo(config.home_tz)),
+                name="finance-month-recap")
+
+            async def _weekly_summary_job(context=None):
+                try:  # never crash the bot on a nudge failure
+                    if nudge_chat_id is None:
+                        return
+                    now = datetime.now(ZoneInfo(config.home_tz))
+                    text = build_weekly_summary(finance_store, now)
+                    await asyncio.to_thread(send_fn, nudge_chat_id, text)
+                except Exception as e:
+                    log.warning("weekly-summary nudge failed: %s", e)
+            # Sunday = days=(0,): PTB v20+ maps Sun=0..Sat=6 (matches cloud_scheduler._DAY_NUM) —
+            # NEVER (6,), which would silently fire on Saturday instead.
+            app.job_queue.run_daily(
+                _weekly_summary_job, time=dtime(20, 0, tzinfo=ZoneInfo(config.home_tz)), days=(0,),
+                name="finance-weekly-summary")
     fact_store = FactStore(config.db_path)
     if scheduler is not None:
         scheduler.reconcile()   # arm existing cloud schedules on startup
