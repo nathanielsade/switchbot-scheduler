@@ -10,7 +10,9 @@ which is how Menashe reported ₪55,860 for August. Two fixes are covered here:
 import os
 import tempfile
 
-from home_agent.finance import _fingerprint, build_finance_tools, run_finance_sync
+from home_agent.finance import (_collapse_duplicate_pending_bills, _fingerprint,
+                                 _spendable_rows, _supersede_settled_bills,
+                                 build_finance_tools, run_finance_sync)
 from home_agent.finance_store import FinanceStore
 from finance_fakes import make_fetch
 
@@ -52,8 +54,9 @@ def test_completed_fingerprint_still_distinguishes_by_amount():
 
 
 def test_pending_and_completed_fingerprints_do_not_collide():
-    p = _fingerprint("discount", "1", None, "2026-08-06", -1000, "x", status="pending")
-    c = _fingerprint("discount", "1", None, "2026-08-06", -1000, "x", status="completed")
+    bill = "חיוב לכרטיס ויזה 6146"
+    p = _fingerprint("discount", "1", None, "2026-08-06", -1000, bill, status="pending")
+    c = _fingerprint("discount", "1", None, "2026-08-06", -1000, bill, status="completed")
     assert p != c
 
 
@@ -126,7 +129,7 @@ def test_superseded_rows_excluded_from_search_and_sums():
 # --- fix 3: backfill of rows written under the old scheme ------------------------------
 
 def test_backfill_collapses_legacy_duplicate_pending_rows():
-    """Rows already in the live DB were written with amount-bearing fingerprints. The backfill
+    """Rows already in the live DB were written with amount-bearing fingerprints. The collapse
     keeps the newest of each duplicate group and supersedes the rest."""
     store = _store()
     for amount in ("-4670.00", "-4706.00", "-5218.08"):
@@ -138,7 +141,7 @@ def test_backfill_collapses_legacy_duplicate_pending_rows():
             "currency": "ILS", "description": "חיוב לכרטיס ויזה 6146",
             "status": "pending", "raw_json": "{}"}])
 
-    collapsed = store.backfill_pending_duplicates()
+    collapsed = _collapse_duplicate_pending_bills(store)
 
     assert collapsed == 2
     rows = store.transactions_between("2026-08-01", "2026-08-31")
@@ -154,5 +157,104 @@ def test_backfill_is_idempotent():
             "processed_date": "2026-09-01", "amount_agorot": int(float(amount) * 100),
             "currency": "ILS", "description": "חיוב לכרטיס ויזה 6146",
             "status": "pending", "raw_json": "{}"}])
-    assert store.backfill_pending_duplicates() == 1
-    assert store.backfill_pending_duplicates() == 0
+    assert _collapse_duplicate_pending_bills(store) == 1
+    assert _collapse_duplicate_pending_bills(store) == 0
+
+
+# --- the amount-free identity is for CARD BILLS only ----------------------------------
+
+def test_ordinary_pending_purchases_keep_the_amount_in_their_identity():
+    """Two same-day purchases at one merchant are two transactions. Collapsing them would
+    under-report spend and leave no superseded row to audit — the opposite of the bug above."""
+    a = _fingerprint("max", "1743", None, "2026-08-06", -4500, "ארומה", status="pending")
+    b = _fingerprint("max", "1743", None, "2026-08-06", -12000, "ארומה", status="pending")
+    assert a != b
+
+
+def test_two_distinct_same_day_pending_purchases_survive_a_sync():
+    store = _store()
+    store.upsert_transactions([{
+        "source": "discount", "account": "0216686964", "identifier": None,
+        "fingerprint": _fingerprint("discount", "0216686964", None, "2026-08-06", amt,
+                                    "ארומה", status="pending"),
+        "txn_date": "2026-08-06", "processed_date": None, "amount_agorot": amt,
+        "currency": "ILS", "description": "ארומה", "status": "pending", "raw_json": "{}",
+    } for amt in (-4500, -12000)])
+    _collapse_duplicate_pending_bills(store)
+    kept = store.transactions_between("2026-08-01", "2026-08-31")
+    assert sorted(r["amount_agorot"] for r in kept) == [-12000, -4500]
+
+
+# --- a refund is not a settlement ------------------------------------------------------
+
+def test_a_credit_does_not_retire_an_outstanding_bill():
+    """זיכוי (refund) and חיוב (charge) both match _CARD_BILL_RE. A refund landing on the bill's
+    charge date must NOT retire a bill that has not been paid."""
+    store = _store()
+    run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+        _bill_contract("-5218.08", date="2026-08-06", processed="2026-09-01"))})
+    store.upsert_transactions([{
+        "source": "discount", "account": "0216686964", "identifier": "300",
+        "fingerprint": "id:300", "txn_date": "2026-09-01", "processed_date": "2026-09-01",
+        "amount_agorot": 3000, "currency": "ILS",
+        "description": "זיכוי לכרטיס ויזה 6146", "status": "completed", "raw_json": "{}"}])
+    assert _supersede_settled_bills(store) == 0
+    sep, _ = _spendable_rows(store, "2026-09-01", "2026-09-30")
+    assert -521808 in [r["amount_agorot"] for r in sep]
+
+
+# --- the bank moves a charge off a weekend/holiday -------------------------------------
+
+def test_a_charge_that_slips_a_day_still_retires_its_pending_bill():
+    """If the exact-date match missed, _effective_date would put the un-retired pending row in
+    the SAME month as the real charge — one bill counted twice inside one month."""
+    store = _store()
+    run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+        _bill_contract("-5218.08", date="2026-08-06", processed="2026-09-01"))})
+    run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+        _bill_contract("-5300.00", date="2026-09-02", processed="2026-09-02",
+                       status="completed", identifier="301"))})
+    sep, _ = _spendable_rows(store, "2026-09-01", "2026-09-30")
+    assert [r["amount_agorot"] for r in sep] == [-530000]
+
+
+def test_a_charge_far_from_the_due_date_does_not_retire_the_bill():
+    store = _store()
+    run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+        _bill_contract("-5218.08", date="2026-08-06", processed="2026-09-01"))})
+    run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+        _bill_contract("-5300.00", date="2026-09-20", processed="2026-09-20",
+                       status="completed", identifier="302"))})
+    rows, _ = _spendable_rows(store, "2026-09-01", "2026-09-30")
+    assert sorted(r["amount_agorot"] for r in rows) == [-530000, -521808]
+
+
+# --- multiple cards settling in one pass ------------------------------------------------
+
+def test_two_cards_settling_together_both_retire():
+    store = _store()
+    for card in ("6146", "1743"):
+        run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+            _bill_contract("-5000.00", date="2026-07-03", processed="2026-08-01", card=card))})
+    for i, card in enumerate(("6146", "1743")):
+        run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+            _bill_contract("-5100.00", date="2026-08-01", processed="2026-08-01", card=card,
+                           status="completed", identifier=f"40{i}"))})
+    assert store.transactions_between("2026-07-01", "2026-07-31") == []
+
+
+def test_a_small_mid_cycle_charge_does_not_retire_the_monthly_bill():
+    """The bank uses the same 'חיוב לכרטיס ויזה NNNN' wording for small mid-cycle charges. One
+    landing near the bill's due date must not retire it — found on live data, where a ₪51.90
+    charge dated 08-29 sat inside the date window of the ₪5,130.18 bill due 09-01."""
+    store = _store()
+    run_finance_sync(store=store, fetch_fns={"discount": make_fetch(
+        _bill_contract("-5130.18", date="2026-08-09", processed="2026-09-01", card="1743"))})
+    store.upsert_transactions([{
+        "source": "discount", "account": "0216686964", "identifier": "500",
+        "fingerprint": "id:500", "txn_date": "2026-08-29", "processed_date": "2026-08-29",
+        "amount_agorot": -5190, "currency": "ILS",
+        "description": "חיוב לכרטיס ויזה 1743", "status": "completed", "raw_json": "{}"}])
+    assert _supersede_settled_bills(store) == 0
+    rows, _ = _spendable_rows(store, "2026-09-01", "2026-09-30")
+    assert [r["amount_agorot"] for r in rows] == [-513018]

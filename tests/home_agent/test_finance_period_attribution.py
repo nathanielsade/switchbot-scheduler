@@ -56,8 +56,8 @@ def test_august_carries_only_the_bill_actually_charged_in_august():
 
 
 def test_settled_bills_are_still_bucketed_by_txn_date():
-    """Only PENDING bills move. A settled row stays where it is even if the bank's processed_date
-    sits in a neighbouring month — it has already been charged."""
+    """Only PENDING bills move. A settled row stays on its txn_date even when the bank's
+    processed_date differs — it has already been charged."""
     store = _store()
     store.upsert_transactions([
         _bill(-157793, "2026-07-29", "2026-07-28", status="completed", identifier="199")])
