@@ -96,6 +96,65 @@ def test_hebrew_category_labels_digit_free_prompt_stays_green():
     assert "חודשים" in out
 
 
+def test_monthly_amount_is_the_median_not_mean_or_max():
+    # A real subscription's charge drifts month to month; the reported monthly amount must be the
+    # MEDIAN of the individual charges. Amounts chosen so median (33.00) != mean (34.67) != max (39.00),
+    # so a regression to mean/max/first/last would change the rendered ₪ and fail here.
+    store = _store()
+    store.upsert_transactions([
+        _row("v1", "2026-05-08", -3200, "SPOTIFY AAA"),
+        _row("v2", "2026-06-09", -3300, "SPOTIFY BBB"),
+        _row("v3", "2026-07-10", -3900, "SPOTIFY CCC"),
+    ])
+    store.add_rule("spotify", "subscriptions")
+    tools = build_finance_tools(store, now_fn=_frozen)
+    out = _tool(tools, "list_recurring_commitments").impl({})
+    assert "33.00" in out          # median
+    assert "39.00" not in out      # not the max / last
+    assert "32.00" not in out      # not the min / first
+
+
+def test_multiple_items_ordered_by_category_then_amount_with_correct_total():
+    store = _store()
+    store.upsert_transactions([
+        _row("rent1", "2026-05-01", -530000, "משיכת שיק:11"),
+        _row("rent2", "2026-06-01", -530000, "משיכת שיק:12"),
+        _row("ap1", "2026-05-08", -3990, "APPLE.COM/BILL 1"),
+        _row("ap2", "2026-06-08", -3990, "APPLE.COM/BILL 2"),
+        _row("sp1", "2026-05-09", -3390, "SPOTIFY 1"),
+        _row("sp2", "2026-06-09", -3390, "SPOTIFY 2"),
+    ])
+    store.add_rule("משיכת שיק", "rent")
+    store.add_rule("apple.com", "subscriptions")
+    store.add_rule("spotify", "subscriptions")
+    tools = build_finance_tools(store, now_fn=_frozen)
+    out = _tool(tools, "list_recurring_commitments").impl({})
+    # Category order: rent (₪5,300 max) before subscriptions (₪39.90 max).
+    # Match the section-label lines ("<label>:"), not the "מנויים" inside the header.
+    assert out.index("שכירות:") < out.index("מנויים:")
+    # Within subscriptions: apple (₪39.90) before spotify (₪33.90).
+    assert out.index("apple.com") < out.index("spotify")
+    # Total = 5300 + 39.90 + 33.90 = ₪5,373.80.
+    assert "5,373.80" in out
+
+
+def test_partial_coverage_flag_surfaced():
+    # An uncovered card-bill line (no matching Max itemization) is kept at bank level → partial.
+    # The tool must warn, because a card's itemized subscriptions are exactly what's then missing.
+    store = _store()
+    store.upsert_transactions([
+        _row("sp1", "2026-05-08", -3390, "SPOTIFY 1"),
+        _row("sp2", "2026-06-09", -3390, "SPOTIFY 2"),
+        _row("sp3", "2026-07-10", -3390, "SPOTIFY 3"),
+        _row("cb", "2026-07-05", -50000, "חיוב לכרטיס ויזה 6146"),  # uncovered → partial
+    ])
+    store.add_rule("spotify", "subscriptions")
+    tools = build_finance_tools(store, now_fn=_frozen)
+    out = _tool(tools, "list_recurring_commitments").impl({})
+    assert "spotify" in out
+    assert "פירוט הכרטיס אינו זמין" in out  # _PARTIAL_FLAG
+
+
 def test_empty_case_plain_hebrew_message():
     store = _store()
     tools = build_finance_tools(store, now_fn=_frozen)

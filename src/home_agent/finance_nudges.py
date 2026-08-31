@@ -7,7 +7,7 @@ helpers (_spendable_rows / _categorize / _period_range / _shekels) rather than r
 logic, so a nudge can never diverge from what financial_summary/spending_by_category report —
 see docs/superpowers/sdd/d-1-plan.md.
 """
-from .finance import CATEGORIES, _CATEGORY_HE, _categorize, _period_range, _shekels, _spendable_rows
+from .finance import _CATEGORY_HE, _categorize, _period_range, _shekels, _spendable_rows
 
 _TOP_CATEGORIES = 3
 

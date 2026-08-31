@@ -158,14 +158,10 @@ def _resolve_range(args, now_fn):
 def _categorize(description, rules):
     """Categorize a transaction by matching merchant patterns. Read-time derivation.
     Precedence: longest merchant_pattern wins; tie → newest id.
-    Returns category str or None if uncategorized."""
-    desc = _norm_desc(description)
-    best = None
-    for r in rules:  # rules come ordered by id asc; keep the best by (len, id)
-        if r["merchant_pattern"].strip().lower() in desc:
-            if best is None or (len(r["merchant_pattern"]), r["id"]) >= (len(best["merchant_pattern"]), best["id"]):
-                best = r
-    return best["category"] if best else None
+    Returns category str or None if uncategorized. Delegates the winner selection to
+    _matching_rule so the two can never diverge."""
+    rule = _matching_rule(description, rules)
+    return rule["category"] if rule else None
 
 
 _SYNC_SCHEMA = {"type": "function", "function": {
@@ -503,14 +499,14 @@ def _forecast_impl(args, *, store, now_fn) -> str:
     return "\n".join(lines)
 
 
-_RECURRING_LOOKBACK_DAYS = 95  # same constant _forecast_impl uses (tuned for the ≤3-day drift gate)
+_RECURRING_LOOKBACK_DAYS = 95  # ~3 months of history: enough for an item to recur across several months
 
 _RECURRING_COMMITMENTS_SCHEMA = {"type": "function", "function": {
     "name": "list_recurring_commitments",
     "description": (
         "List the family's detected recurring/fixed commitments — subscriptions and other regular "
-        "committed outflows (e.g. Spotify, Google One, a savings/gmal deposit) — with typical amount, "
-        "roughly how many months seen, and confidence. Use this for 'what are our subscriptions / fixed "
+        "committed outflows (e.g. Spotify, Google One, a savings/gmal deposit) — with typical amount "
+        "and roughly how many months seen. Use this for 'what are our subscriptions / fixed "
         "commitments' questions. This is DIFFERENT from cash_flow_forecast: this tool detects recurring "
         "items on a SPEND basis (itemized card purchases included), so it catches card-itemized "
         "subscriptions that cash_flow_forecast — which only looks at the bank feed for its balance "
@@ -540,7 +536,7 @@ _COMMITTED_CATEGORIES = FIXED_CATEGORIES | {TRANSFER_CATEGORY}
 def _recurring_commitments_impl(args, *, store, now_fn) -> str:
     now = now_fn()
     lookback = (now.date() - timedelta(days=_RECURRING_LOOKBACK_DAYS)).isoformat()
-    rows, _partial = _spendable_rows(store, lookback, now.date().isoformat())
+    rows, partial = _spendable_rows(store, lookback, now.date().isoformat())
     rules = store.active_rules()
 
     groups = {}  # merchant_pattern -> {"category": str, "amounts": [int], "months": set()}
@@ -555,7 +551,10 @@ def _recurring_commitments_impl(args, *, store, now_fn) -> str:
         g["months"].add(row["txn_date"][:7])
 
     if not groups:
-        return "לא זוהו הוצאות קבועות/מנויים חוזרים עדיין."
+        # When a card's itemized feed is missing, its subscriptions are exactly what's absent from
+        # rows — so flag partial coverage rather than let an empty list read as a definitive "none".
+        msg = "לא זוהו הוצאות קבועות/מנויים חוזרים עדיין."
+        return msg + "\n" + _PARTIAL_FLAG if partial else msg
 
     items = []
     for pattern, g in groups.items():
@@ -575,6 +574,8 @@ def _recurring_commitments_impl(args, *, store, now_fn) -> str:
         for it in cat_items:
             lines.append(f"  {it['pattern']}: {_shekels(it['monthly'])} (~{it['months']} חודשים)")
     lines.append(f"סה\"כ: {_shekels(total)}")
+    if partial:  # some card itemization unavailable — list may be understated (mirror sibling tools)
+        lines.append(_PARTIAL_FLAG)
     return "\n".join(lines)
 
 
