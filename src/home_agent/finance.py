@@ -88,10 +88,23 @@ def _is_card_payment(description, card_numbers):
     return bool(m and m.group(2) in card_numbers)
 
 
-def _fingerprint(source, account, identifier, txn_date, amount_agorot, description) -> str:
+def _fingerprint(source, account, identifier, txn_date, amount_agorot, description,
+                 *, status="completed") -> str:
+    """Stable identity for a transaction across nightly re-scrapes.
+
+    A settled row carries a bank `identifier` and we use it verbatim. Without one we hash the
+    row's fields — but a PENDING row's amount is provisional: an accruing card bill grows every
+    night as purchases post to it. Hashing that amount minted a new fingerprint per sync and
+    inserted a duplicate row each night (one bill booked six times, ₪24,278 phantom, 2026-08).
+    So a pending row is identified WITHOUT its amount, and the "pending" marker keeps it from
+    colliding with the settled row of the same shape.
+    """
     if identifier:
         return f"id:{identifier}"
-    raw = f"{source}|{account}|{txn_date}|{amount_agorot}|{_norm_desc(description)}"
+    if str(status).lower() == "pending":
+        raw = f"{source}|{account}|pending|{txn_date}|{_norm_desc(description)}"
+    else:
+        raw = f"{source}|{account}|{txn_date}|{amount_agorot}|{_norm_desc(description)}"
     return "h:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -114,13 +127,15 @@ def normalize_contract(data):
                 dropped += 1
                 continue
             identifier = t.get("identifier")
+            status = str(t.get("status", "completed")).lower()
             txn_rows.append({
                 "source": source, "account": account, "identifier": identifier,
-                "fingerprint": _fingerprint(source, account, identifier, txn_date, amount, desc),
+                "fingerprint": _fingerprint(source, account, identifier, txn_date, amount, desc,
+                                            status=status),
                 "txn_date": txn_date,
                 "processed_date": (str(t["processedDate"])[:10] if t.get("processedDate") else None),
                 "amount_agorot": amount, "currency": t.get("chargedCurrency") or "ILS",
-                "description": desc, "status": str(t.get("status", "completed")).lower(),
+                "description": desc, "status": status,
                 "raw_json": json.dumps(t, ensure_ascii=False),
             })
     return txn_rows, snapshots, {"dropped": dropped}
@@ -255,7 +270,47 @@ def _sync_locked(*, store, fetch_fns, now_fn) -> str:
         lines.append(f"{source}: {inserted} חדשות, {updated} עודכנו{dropped} (טווח {dates[0]}…{dates[-1]})")
     if not any_ok:
         return "לא הצלחתי למשוך נתונים מהבנק כרגע. נסו שוב עוד רגע."
+    # After every source is in: retire pending bills that settled, and collapse any duplicate
+    # pending rows left by the pre-2026-08-31 amount-bearing fingerprint. Both are status flips
+    # and both are idempotent, so running them on each sync is safe and self-healing.
+    superseded = _supersede_settled_bills(store) + store.backfill_pending_duplicates()
+    if superseded:
+        log.info("finance sync: superseded %d stale pending row(s)", superseded)
     return "נמשכו נתונים:\n" + "\n".join(lines) + " ✅"
+
+
+def _supersede_settled_bills(store) -> int:
+    """Retire pending card bills that have since settled.
+
+    A pending bill is the bank's running total for a card's NEXT charge; when the cycle closes
+    the bank posts the real charge as a separate `completed` row — different txn_date, different
+    final amount, and now with an identifier — so it can never upsert onto the pending row. Left
+    alone, the same bill is counted twice: once in the month the pending row is dated, once in
+    the month it actually settled (live 2026-08: a ₪7,009.19 pending dated 07-03 sat in July
+    alongside the ₪8,321.99 charge it became on 08-01).
+
+    Match rule: same source+account+card, and the pending row's processed_date — the bank's own
+    statement of when this bill will be charged — equals the settled row's txn_date. Anything
+    that doesn't match stays put; an outstanding bill must survive.
+
+    Returns the number of rows superseded.
+    """
+    stale = []
+    for row in store.pending_rows():
+        m = _CARD_BILL_RE.search(_norm_desc(row["description"]))
+        if not m or not row["processed_date"]:
+            continue  # only card bills settle this way; no processed_date -> nothing to match on
+        card = _card4(m.group(2))
+        settled = [
+            c for c in store.transactions_between(row["processed_date"], row["processed_date"])
+            if c["status"] != "pending"
+            and c["source"] == row["source"] and c["account"] == row["account"]
+            and (lambda mm: bool(mm) and _card4(mm.group(2)) == card)(
+                _CARD_BILL_RE.search(_norm_desc(c["description"])))
+        ]
+        if settled:
+            stale.append((row["source"], row["account"], row["fingerprint"]))
+    return store.mark_superseded(stale) if stale else 0
 
 
 def _spendable_rows(store, frm, to):
