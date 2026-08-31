@@ -14,6 +14,17 @@ log = logging.getLogger("home_agent")
 CATEGORIES = ("groceries", "rent", "salary", "utilities", "transport", "health",
               "restaurants", "subscriptions", "shopping", "cash", "transfer", "other")
 
+# Hebrew labels for CATEGORIES — finance replies are Hebrew end-to-end, so the raw English enum
+# values (used internally by finance.py/category_rules) must never be printed verbatim. Covers
+# every value in CATEGORIES; uncategorized rows use "אחר" directly. Lives here (not in
+# finance_nudges) because finance.py is the leaf module — finance_nudges imports FROM finance.
+_CATEGORY_HE = {
+    "rent": "שכירות", "transport": "תחבורה", "groceries": "מכולת", "restaurants": "מסעדות",
+    "subscriptions": "מנויים", "health": "בריאות", "shopping": "קניות", "utilities": "חשבונות",
+    "transfer": "העברות/חיסכון", "salary": "הכנסה", "cash": "מזומן", "other": "אחר",
+}
+assert set(CATEGORIES) <= set(_CATEGORY_HE)
+
 # cash_flow_status classification (v2.1, category-driven — see docs/superpowers/sdd/c-1-plan.md).
 # Fixed = committed monthly outflow: named categories + committed savings/gmal (transfer negatives).
 FIXED_CATEGORIES = frozenset({"rent", "utilities", "subscriptions"})
@@ -147,14 +158,10 @@ def _resolve_range(args, now_fn):
 def _categorize(description, rules):
     """Categorize a transaction by matching merchant patterns. Read-time derivation.
     Precedence: longest merchant_pattern wins; tie → newest id.
-    Returns category str or None if uncategorized."""
-    desc = _norm_desc(description)
-    best = None
-    for r in rules:  # rules come ordered by id asc; keep the best by (len, id)
-        if r["merchant_pattern"].strip().lower() in desc:
-            if best is None or (len(r["merchant_pattern"]), r["id"]) >= (len(best["merchant_pattern"]), best["id"]):
-                best = r
-    return best["category"] if best else None
+    Returns category str or None if uncategorized. Delegates the winner selection to
+    _matching_rule so the two can never diverge."""
+    rule = _matching_rule(description, rules)
+    return rule["category"] if rule else None
 
 
 _SYNC_SCHEMA = {"type": "function", "function": {
@@ -492,6 +499,86 @@ def _forecast_impl(args, *, store, now_fn) -> str:
     return "\n".join(lines)
 
 
+_RECURRING_LOOKBACK_DAYS = 95  # ~3 months of history: enough for an item to recur across several months
+
+_RECURRING_COMMITMENTS_SCHEMA = {"type": "function", "function": {
+    "name": "list_recurring_commitments",
+    "description": (
+        "List the family's detected recurring/fixed commitments — subscriptions and other regular "
+        "committed outflows (e.g. Spotify, Google One, a savings/gmal deposit) — with typical amount "
+        "and roughly how many months seen. Use this for 'what are our subscriptions / fixed "
+        "commitments' questions. This is DIFFERENT from cash_flow_forecast: this tool detects recurring "
+        "items on a SPEND basis (itemized card purchases included), so it catches card-itemized "
+        "subscriptions that cash_flow_forecast — which only looks at the bank feed for its balance "
+        "projection — would miss. Do not conflate the two totals. Report in the user's language."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
+
+
+def _matching_rule(description, rules):
+    """Same winner logic as _categorize (longest merchant_pattern wins; tie -> newest id), but
+    returns the winning RULE dict instead of just its category — the rule's merchant_pattern is
+    the stable merchant identifier we group recurring commitments by (unlike the raw description,
+    which varies month to month for real merchants, e.g. Spotify's per-charge billing code).
+    Returns None if no rule matches."""
+    desc = _norm_desc(description)
+    best = None
+    for r in rules:
+        if r["merchant_pattern"].strip().lower() in desc:
+            if best is None or (len(r["merchant_pattern"]), r["id"]) >= (len(best["merchant_pattern"]), best["id"]):
+                best = r
+    return best
+
+
+_COMMITTED_CATEGORIES = FIXED_CATEGORIES | {TRANSFER_CATEGORY}
+
+
+def _recurring_commitments_impl(args, *, store, now_fn) -> str:
+    now = now_fn()
+    lookback = (now.date() - timedelta(days=_RECURRING_LOOKBACK_DAYS)).isoformat()
+    rows, partial = _spendable_rows(store, lookback, now.date().isoformat())
+    rules = store.active_rules()
+
+    groups = {}  # merchant_pattern -> {"category": str, "amounts": [int], "months": set()}
+    for row in rows:
+        if row["amount_agorot"] >= 0:
+            continue  # expenses only — income never counts as a commitment
+        rule = _matching_rule(row["description"], rules)
+        if rule is None or rule["category"] not in _COMMITTED_CATEGORIES:
+            continue  # only the committed set: rent/utilities/subscriptions + savings/gmal transfers
+        g = groups.setdefault(rule["merchant_pattern"], {"category": rule["category"], "amounts": [], "months": set()})
+        g["amounts"].append(abs(row["amount_agorot"]))
+        g["months"].add(row["txn_date"][:7])
+
+    if not groups:
+        # When a card's itemized feed is missing, its subscriptions are exactly what's absent from
+        # rows — so flag partial coverage rather than let an empty list read as a definitive "none".
+        msg = "לא זוהו הוצאות קבועות/מנויים חוזרים עדיין."
+        return msg + "\n" + _PARTIAL_FLAG if partial else msg
+
+    items = []
+    for pattern, g in groups.items():
+        monthly = int(statistics.median(g["amounts"]))
+        items.append({"pattern": pattern, "category": g["category"], "monthly": monthly,
+                      "months": len(g["months"])})
+    items.sort(key=lambda it: it["monthly"], reverse=True)
+    total = sum(it["monthly"] for it in items)
+
+    by_category = {}
+    for it in items:
+        by_category.setdefault(it["category"], []).append(it)
+
+    lines = ["הוצאות קבועות/מנויים שזוהו:"]
+    for cat, cat_items in sorted(by_category.items(), key=lambda kv: max(i["monthly"] for i in kv[1]), reverse=True):
+        lines.append(f"{_CATEGORY_HE.get(cat, cat)}:")
+        for it in cat_items:
+            lines.append(f"  {it['pattern']}: {_shekels(it['monthly'])} (~{it['months']} חודשים)")
+    lines.append(f"סה\"כ: {_shekels(total)}")
+    if partial:  # some card itemization unavailable — list may be understated (mirror sibling tools)
+        lines.append(_PARTIAL_FLAG)
+    return "\n".join(lines)
+
+
 def _month_start(d):
     return d.replace(day=1)
 
@@ -694,6 +781,8 @@ def build_finance_tools(store, *, now_fn=None, fetch_fns=None):
              impl=lambda a: _forecast_impl(a, store=store, now_fn=now_fn)),
         Tool(name="cash_flow_status", schema=_CASH_FLOW_STATUS_SCHEMA,
              impl=lambda a: _cash_flow_status_impl(a, store=store, now_fn=now_fn)),
+        Tool(name="list_recurring_commitments", schema=_RECURRING_COMMITMENTS_SCHEMA,
+             impl=lambda a: _recurring_commitments_impl(a, store=store, now_fn=now_fn)),
     ]
 
 
