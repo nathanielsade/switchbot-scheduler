@@ -313,6 +313,36 @@ def _supersede_settled_bills(store) -> int:
     return store.mark_superseded(stale) if stale else 0
 
 
+def _is_pending_card_bill(row) -> bool:
+    return (row["status"] == "pending" and bool(row["processed_date"])
+            and bool(_CARD_BILL_RE.search(_norm_desc(row["description"]))))
+
+
+def _effective_date(row) -> str:
+    """The date a row should be BUCKETED into a reporting period.
+
+    Normally the transaction date. A PENDING card bill is the exception: it is the bank's running
+    total for a charge it has not made yet, and its `processed_date` is the bank's own statement
+    of when it will land. Bucketing it by txn_date puts next month's bill in this month — live
+    2026-08 carried two card-6146 bills (July's ₪8,321.99 settled on 08-01, plus ₪5,218.08
+    accruing toward 09-01) and read ₪5,218.08 high. Settled rows are untouched: they have already
+    been charged, and in the live history their two dates agree anyway.
+    """
+    return row["processed_date"] if _is_pending_card_bill(row) else row["txn_date"]
+
+
+def _rows_for_period(store, frm, to):
+    """Rows whose EFFECTIVE date falls in [frm, to] — the date window plus any pending card bill
+    dated outside it that the bank will charge inside it, minus any dated inside that it won't."""
+    rows = [r for r in store.transactions_between(frm, to) if frm <= _effective_date(r) <= to]
+    seen = {(r["source"], r["account"], r["fingerprint"]) for r in rows}
+    for row in store.pending_rows():
+        key = (row["source"], row["account"], row["fingerprint"])
+        if key not in seen and frm <= _effective_date(row) <= to:
+            rows.append(row)
+    return rows
+
+
 def _spendable_rows(store, frm, to):
     """Option A: drop the double-count between the bank's lump card-bill line and the itemized
     Max purchases behind it. For a card whose Max data covers [frm, to], exclude the bank's
@@ -324,7 +354,7 @@ def _spendable_rows(store, frm, to):
     covered = {_card4(c) for c in store.covered_cards("max", frm, to, grace_days=_COVERAGE_GRACE_DAYS)}
     kept = []
     partial_flag = False
-    for row in store.transactions_between(frm, to):
+    for row in _rows_for_period(store, frm, to):
         m = _CARD_BILL_RE.search(_norm_desc(row["description"]))
         card = _card4(m.group(2)) if m else None
         if card is not None and card in covered:
