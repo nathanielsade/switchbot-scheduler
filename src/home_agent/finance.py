@@ -519,30 +519,62 @@ _RECURRING_COMMITMENTS_SCHEMA = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}
 
 
+def _matching_rule(description, rules):
+    """Same winner logic as _categorize (longest merchant_pattern wins; tie -> newest id), but
+    returns the winning RULE dict instead of just its category — the rule's merchant_pattern is
+    the stable merchant identifier we group recurring commitments by (unlike the raw description,
+    which varies month to month for real merchants, e.g. Spotify's per-charge billing code).
+    Returns None if no rule matches."""
+    desc = _norm_desc(description)
+    best = None
+    for r in rules:
+        if r["merchant_pattern"].strip().lower() in desc:
+            if best is None or (len(r["merchant_pattern"]), r["id"]) >= (len(best["merchant_pattern"]), best["id"]):
+                best = r
+    return best
+
+
+_COMMITTED_CATEGORIES = FIXED_CATEGORIES | {TRANSFER_CATEGORY}
+
+
 def _recurring_commitments_impl(args, *, store, now_fn) -> str:
     now = now_fn()
     lookback = (now.date() - timedelta(days=_RECURRING_LOOKBACK_DAYS)).isoformat()
     rows, _partial = _spendable_rows(store, lookback, now.date().isoformat())
-    recurring = _detect_recurring(rows)
     rules = store.active_rules()
-    kept = []
-    for r in recurring:
-        if r["sign"] > 0:
-            continue  # recurring income excluded
-        cat = _categorize(r["description"], rules)
-        if cat is not None and cat != TRANSFER_CATEGORY and cat not in CATEGORIES:
-            continue  # defensive; shouldn't happen
-        kept.append((r, cat))
-    if not kept:
+
+    groups = {}  # merchant_pattern -> {"category": str, "amounts": [int], "months": set()}
+    for row in rows:
+        if row["amount_agorot"] >= 0:
+            continue  # expenses only — income never counts as a commitment
+        rule = _matching_rule(row["description"], rules)
+        if rule is None or rule["category"] not in _COMMITTED_CATEGORIES:
+            continue  # only the committed set: rent/utilities/subscriptions + savings/gmal transfers
+        g = groups.setdefault(rule["merchant_pattern"], {"category": rule["category"], "amounts": [], "months": set()})
+        g["amounts"].append(abs(row["amount_agorot"]))
+        g["months"].add(row["txn_date"][:7])
+
+    if not groups:
         return "לא זוהו הוצאות קבועות/מנויים חוזרים עדיין."
-    kept.sort(key=lambda rc: abs(rc[0]["amount_agorot"]), reverse=True)
-    total = sum(r["amount_agorot"] for r, _cat in kept)
+
+    items = []
+    for pattern, g in groups.items():
+        monthly = int(statistics.median(g["amounts"]))
+        items.append({"pattern": pattern, "category": g["category"], "monthly": monthly,
+                      "months": len(g["months"])})
+    items.sort(key=lambda it: it["monthly"], reverse=True)
+    total = sum(it["monthly"] for it in items)
+
+    by_category = {}
+    for it in items:
+        by_category.setdefault(it["category"], []).append(it)
+
     lines = ["הוצאות קבועות/מנויים שזוהו:"]
-    for r, cat in kept:
-        label = f" [{_CATEGORY_HE.get(cat, cat)}]" if cat else ""
-        lines.append(f"{r['description']}: {_shekels(-r['amount_agorot'])} (~{r['occurrences']} חודשים, "
-                     f"~יום {r['day']}, ביטחון {r['confidence']}){label}")
-    lines.append(f"סה\"כ: {_shekels(-total)}")
+    for cat, cat_items in sorted(by_category.items(), key=lambda kv: max(i["monthly"] for i in kv[1]), reverse=True):
+        lines.append(f"{_CATEGORY_HE.get(cat, cat)}:")
+        for it in cat_items:
+            lines.append(f"  {it['pattern']}: {_shekels(it['monthly'])} (~{it['months']} חודשים)")
+    lines.append(f"סה\"כ: {_shekels(total)}")
     return "\n".join(lines)
 
 

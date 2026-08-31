@@ -24,74 +24,76 @@ def _row(i, d, amt, desc, account="1"):
                 description=desc, status="completed", raw_json="{}")
 
 
-def test_lists_recurring_expenses_excludes_one_off():
+def test_spotify_varying_descriptions_caught_as_one_item():
+    # Real-world Spotify billing: a different charge code every month. Exact-text grouping
+    # (the old design) would treat these as 3 separate one-offs and miss them entirely.
     store = _store()
     store.upsert_transactions([
-        _row("sp1", "2026-05-10", -3390, "Spotify"),
-        _row("sp2", "2026-06-10", -3390, "Spotify"),
-        _row("sp3", "2026-07-10", -3390, "Spotify"),
-        _row("g1", "2026-05-05", -1200, "Google One"),
-        _row("g2", "2026-06-05", -1200, "Google One"),
-        _row("g3", "2026-07-05", -1200, "Google One"),
-        _row("o1", "2026-06-20", -50000, "רכישה חד פעמית"),
+        _row("sp1", "2026-05-08", -3390, "SPOTIFY P3D38A9A90"),
+        _row("sp2", "2026-06-09", -3390, "SPOTIFY P3E3701264"),
+        _row("sp3", "2026-07-10", -3390, "SPOTIFY P3F1122334"),
     ])
+    store.add_rule("spotify", "subscriptions")
     tools = build_finance_tools(store, now_fn=_frozen)
     out = _tool(tools, "list_recurring_commitments").impl({})
-    assert "Spotify" in out
+    # Listed once, at the stable rule-name identifier "spotify", not the raw varying descriptions.
+    assert out.count("spotify") == 1
     assert "33.90" in out
-    assert "Google One" in out
-    assert "12.00" in out
-    assert "רכישה חד פעמית" not in out
-    assert "500.00" not in out
+    assert "מנויים" in out
 
 
-def test_recurring_income_excluded_transfer_outflow_included():
+def test_rent_by_varying_numbered_checks_caught():
     store = _store()
     store.upsert_transactions([
+        _row("r1", "2026-05-01", -530000, "משיכת שיק:0001"),
+        _row("r2", "2026-06-03", -530000, "משיכת שיק:0002"),
+        _row("r3", "2026-07-02", -530000, "משיכת שיק:0003"),
+    ])
+    store.add_rule("משיכת שיק", "rent")
+    tools = build_finance_tools(store, now_fn=_frozen)
+    out = _tool(tools, "list_recurring_commitments").impl({})
+    assert out.count("משיכת שיק") == 1
+    assert "5,300.00" in out
+    assert "שכירות" in out
+
+
+def test_savings_listed_income_and_one_off_excluded():
+    store = _store()
+    store.upsert_transactions([
+        # recurring transfer (savings) outflow -> included
+        _row("t1", "2026-05-15", -80000, "הפקדה לחיסכון 001"),
+        _row("t2", "2026-06-15", -80000, "הפקדה לחיסכון 002"),
+        _row("t3", "2026-07-15", -80000, "הפקדה לחיסכון 003"),
+        # recurring salary (income, sign +) -> excluded even though it's regular
         _row("s1", "2026-05-10", 1000000, "משכורת"),
         _row("s2", "2026-06-10", 1000000, "משכורת"),
         _row("s3", "2026-07-10", 1000000, "משכורת"),
-        _row("t1", "2026-05-15", -80000, "הפקדה לחיסכון"),
-        _row("t2", "2026-06-15", -80000, "הפקדה לחיסכון"),
-        _row("t3", "2026-07-15", -80000, "הפקדה לחיסכון"),
     ])
     store.add_rule("הפקדה לחיסכון", "transfer")
+    store.add_rule("משכורת", "salary")
+    # a one-off large discretionary purchase, uncategorized/non-committed -> excluded
+    store.upsert_transactions([_row("o1", "2026-06-20", -500000, "רהיטים לבית")])
     tools = build_finance_tools(store, now_fn=_frozen)
     out = _tool(tools, "list_recurring_commitments").impl({})
-    assert "משכורת" not in out  # recurring income excluded
-    assert "הפקדה לחיסכון" in out  # recurring transfer outflow included
-    assert "העברות/חיסכון" in out  # Hebrew category label for transfer
+    assert "הפקדה לחיסכון" in out
+    assert "העברות/חיסכון" in out
+    assert "משכורת" not in out
+    assert "רהיטים לבית" not in out
 
 
-def test_confidence_and_sort_order_biggest_first():
+def test_hebrew_category_labels_digit_free_prompt_stays_green():
     store = _store()
     store.upsert_transactions([
-        _row("sp1", "2026-05-10", -3390, "Spotify"),
-        _row("sp2", "2026-06-10", -3390, "Spotify"),
-        _row("sp3", "2026-07-10", -3390, "Spotify"),
-        _row("g1", "2026-05-05", -1200, "Google One"),
-        _row("g2", "2026-06-05", -1200, "Google One"),
-        _row("g3", "2026-07-05", -1200, "Google One"),
+        _row("sp1", "2026-05-08", -3390, "SPOTIFY P3D38A9A90"),
+        _row("sp2", "2026-06-09", -3390, "SPOTIFY P3E3701264"),
+        _row("sp3", "2026-07-10", -3390, "SPOTIFY P3F1122334"),
     ])
-    tools = build_finance_tools(store, now_fn=_frozen)
-    out = _tool(tools, "list_recurring_commitments").impl({})
-    assert "ביטחון" in out
-    # Spotify (bigger amount) must be listed before Google One (smaller amount)
-    assert out.index("Spotify") < out.index("Google One")
-
-
-def test_hebrew_category_labels_no_raw_english_enum():
-    store = _store()
-    store.upsert_transactions([
-        _row("sp1", "2026-05-10", -3390, "Spotify"),
-        _row("sp2", "2026-06-10", -3390, "Spotify"),
-        _row("sp3", "2026-07-10", -3390, "Spotify"),
-    ])
-    store.add_rule("Spotify", "subscriptions")
+    store.add_rule("spotify", "subscriptions")
     tools = build_finance_tools(store, now_fn=_frozen)
     out = _tool(tools, "list_recurring_commitments").impl({})
     assert "מנויים" in out
     assert "subscriptions" not in out
+    assert "חודשים" in out
 
 
 def test_empty_case_plain_hebrew_message():
