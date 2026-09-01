@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import statistics
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from .config import DEFAULT_FINANCE_START_DAYS
@@ -77,6 +77,28 @@ def _card4(value) -> str:
     return digits[-4:]
 
 
+def _date_window(centre, days):
+    """[centre-days, centre+days] as ISO strings, or None if `centre` isn't a usable date."""
+    try:
+        c = date.fromisoformat(centre)
+    except (TypeError, ValueError):
+        return None
+    return (c - timedelta(days=days)).isoformat(), (c + timedelta(days=days)).isoformat()
+
+
+def _bill_card(description):
+    """The 4-digit card of a card-bill line, or None when it isn't one."""
+    m = _CARD_BILL_RE.search(_norm_desc(description))
+    return _card4(m.group(2)) if m else None
+
+
+def _bill_direction(description):
+    """'חיוב' (charge) or 'זיכוי' (credit) for a card-bill line, else None. The two must never be
+    matched against each other: a refund landing on a bill's charge date is not that bill."""
+    m = _CARD_BILL_RE.search(_norm_desc(description))
+    return m.group(1) if m else None
+
+
 def _is_card_payment(description, card_numbers):
     """True iff the normalized description is a Discount card-bill/credit line for one of card_numbers.
 
@@ -88,10 +110,29 @@ def _is_card_payment(description, card_numbers):
     return bool(m and m.group(2) in card_numbers)
 
 
-def _fingerprint(source, account, identifier, txn_date, amount_agorot, description) -> str:
+def _fingerprint(source, account, identifier, txn_date, amount_agorot, description,
+                 *, status="completed") -> str:
+    """Stable identity for a transaction across nightly re-scrapes.
+
+    A settled row carries a bank `identifier` and we use it verbatim. Without one we hash the
+    row's fields — but a PENDING row's amount is provisional: an accruing card bill grows every
+    night as purchases post to it. Hashing that amount minted a new fingerprint per sync and
+    inserted a duplicate row each night (one bill booked six times, ₪24,278 phantom, 2026-08).
+    So such a row is identified WITHOUT its amount, and the "pending" marker keeps it from
+    colliding with the settled row of the same shape.
+
+    Scoped to card bills on purpose. Dropping the amount for ANY pending row would make two
+    genuinely distinct same-day, same-merchant pending purchases collide on the primary key, and
+    the upsert would silently overwrite one with the other — under-reporting spend, with no
+    superseded row left to audit. A card bill is one-per-card-per-cycle, so collapsing is
+    provably correct there and nowhere else.
+    """
     if identifier:
         return f"id:{identifier}"
-    raw = f"{source}|{account}|{txn_date}|{amount_agorot}|{_norm_desc(description)}"
+    if str(status).lower() == "pending" and _bill_card(description) is not None:
+        raw = f"{source}|{account}|pending|{txn_date}|{_norm_desc(description)}"
+    else:
+        raw = f"{source}|{account}|{txn_date}|{amount_agorot}|{_norm_desc(description)}"
     return "h:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -114,13 +155,15 @@ def normalize_contract(data):
                 dropped += 1
                 continue
             identifier = t.get("identifier")
+            status = str(t.get("status", "completed")).lower()
             txn_rows.append({
                 "source": source, "account": account, "identifier": identifier,
-                "fingerprint": _fingerprint(source, account, identifier, txn_date, amount, desc),
+                "fingerprint": _fingerprint(source, account, identifier, txn_date, amount, desc,
+                                            status=status),
                 "txn_date": txn_date,
                 "processed_date": (str(t["processedDate"])[:10] if t.get("processedDate") else None),
                 "amount_agorot": amount, "currency": t.get("chargedCurrency") or "ILS",
-                "description": desc, "status": str(t.get("status", "completed")).lower(),
+                "description": desc, "status": status,
                 "raw_json": json.dumps(t, ensure_ascii=False),
             })
     return txn_rows, snapshots, {"dropped": dropped}
@@ -255,7 +298,127 @@ def _sync_locked(*, store, fetch_fns, now_fn) -> str:
         lines.append(f"{source}: {inserted} חדשות, {updated} עודכנו{dropped} (טווח {dates[0]}…{dates[-1]})")
     if not any_ok:
         return "לא הצלחתי למשוך נתונים מהבנק כרגע. נסו שוב עוד רגע."
+    # After every source is in: retire pending bills that settled, and collapse duplicate rows
+    # for one bill (originally: rows written under the old amount-bearing fingerprint). Both are
+    # idempotent status flips, so running them on each sync is safe and self-healing.
+    superseded = _supersede_settled_bills(store) + _collapse_duplicate_pending_bills(store)
+    if superseded:
+        log.info("finance sync: superseded %d stale pending row(s)", superseded)
     return "נמשכו נתונים:\n" + "\n".join(lines) + " ✅"
+
+
+# A card bill is charged on a nominal date (the 1st/2nd), but the bank moves it when that day
+# falls on a weekend or holiday. Matching on an EXACT date would miss such a slip — and the miss
+# is worse than the original bug: _effective_date would park the un-retired pending row in the
+# very month the real charge landed, counting one bill twice inside ONE month.
+_SETTLE_TOLERANCE_DAYS = 5
+# ...but the same "חיוב לכרטיס ויזה NNNN" wording is ALSO used for small mid-cycle charges, so a
+# date window alone is not enough: on the live DB a ₪51.90 charge dated 08-29 fell inside the
+# window of a ₪5,130.18 bill due 09-01 and would have retired it. A bill settles at roughly what
+# it accrued to (usually a little more, as late purchases post), so require the candidate to be
+# at least this fraction of the pending total before believing it is the same bill.
+_SETTLE_MIN_RATIO = 0.5
+
+
+def _supersede_settled_bills(store) -> int:
+    """Retire pending card bills that have since settled.
+
+    A pending bill is the bank's running total for a card's NEXT charge; when the cycle closes the
+    bank posts the real charge as a separate row with a different txn_date and a different final
+    amount, so it can never upsert onto the pending row. Left alone the same bill is counted twice
+    — as of 2026-08-31 a ₪7,009.19 pending dated 07-03 sat in July alongside the ₪8,321.99 charge
+    it became on 08-01 (since repaired).
+
+    Match rule: same source + account + card, same DIRECTION (a זיכוי refund must never retire a
+    חיוב bill), the candidate is a debit of at least _SETTLE_MIN_RATIO of the pending total, and
+    its txn_date is within _SETTLE_TOLERANCE_DAYS of the pending row's processed_date — the bank's
+    own statement of when this bill will be charged. Anything that doesn't match stays put; an
+    outstanding bill must survive.
+
+    Returns the number of rows superseded.
+    """
+    stale = []
+    for row in store.pending_rows():
+        card = _bill_card(row["description"])
+        window = _date_window(row["processed_date"], _SETTLE_TOLERANCE_DAYS)
+        if card is None or window is None:
+            continue  # only card bills settle this way; no processed_date -> nothing to match on
+        direction = _bill_direction(row["description"])
+        settled = [
+            c for c in store.transactions_between(*window)
+            if c["status"] != "pending"
+            and c["source"] == row["source"] and c["account"] == row["account"]
+            and c["amount_agorot"] < 0                        # a credit never settles a bill
+            and _bill_card(c["description"]) == card
+            and _bill_direction(c["description"]) == direction
+            and abs(c["amount_agorot"]) >= _SETTLE_MIN_RATIO * abs(row["amount_agorot"])
+        ]
+        if settled:
+            stale.append((row["source"], row["account"], row["fingerprint"]))
+    return store.mark_superseded(stale) if stale else 0
+
+
+def _collapse_duplicate_pending_bills(store) -> int:
+    """Collapse pending CARD-BILL rows that are the same bill recorded more than once.
+
+    Rows written before the pending fingerprint dropped the amount got a fresh identity every
+    night as the bill accrued, so one bill became a run of rows sharing source, account, txn_date,
+    processed_date and description. Keep the most recently imported (the freshest amount) and
+    supersede the rest.
+
+    Restricted to card bills for the same reason _fingerprint is: a run of ordinary pending rows
+    sharing those columns is NOT safely one transaction — two same-day purchases at one merchant
+    look identical here — and retiring one would quietly lower spend with no way to notice.
+    """
+    groups = {}
+    for row in store.pending_rows():
+        if _bill_card(row["description"]) is None:
+            continue
+        key = (row["source"], row["account"], row["txn_date"], row["processed_date"],
+               _norm_desc(row["description"]))
+        groups.setdefault(key, []).append(row)
+    stale = []
+    for rows in groups.values():
+        if len(rows) < 2:
+            continue
+        rows.sort(key=lambda r: r["imported_at"] or "")
+        stale.extend((r["source"], r["account"], r["fingerprint"]) for r in rows[:-1])
+    return store.mark_superseded(stale) if stale else 0
+
+
+def _is_pending_card_bill(row) -> bool:
+    return (row["status"] == "pending" and bool(row["processed_date"])
+            and bool(_CARD_BILL_RE.search(_norm_desc(row["description"]))))
+
+
+def _effective_date(row) -> str:
+    """The date a row should be BUCKETED into a reporting period.
+
+    Normally the transaction date. A PENDING card bill is the exception: it is the bank's running
+    total for a charge it has not made yet, and its `processed_date` is the bank's own statement
+    of when it will land. Bucketing it by txn_date puts next month's bill in this month — live
+    2026-08 carried two card-6146 bills (July's ₪8,321.99 settled on 08-01, plus ₪5,218.08
+    accruing toward 09-01) and read ₪5,218.08 high.
+
+    Settled rows are deliberately untouched — they have already been charged, so their txn_date
+    is where they belong. (Their two dates are usually but NOT always equal: 7 of 94 settled
+    card-bill rows on the live DB differed by 1-3 days as of 2026-08-31, none across a month
+    boundary. The rule here is "only pending card bills are re-bucketed", not an assumption that
+    the dates agree.)
+    """
+    return row["processed_date"] if _is_pending_card_bill(row) else row["txn_date"]
+
+
+def _rows_for_period(store, frm, to):
+    """Rows whose EFFECTIVE date falls in [frm, to] — the date window plus any pending card bill
+    dated outside it that the bank will charge inside it, minus any dated inside that it won't."""
+    rows = [r for r in store.transactions_between(frm, to) if frm <= _effective_date(r) <= to]
+    seen = {(r["source"], r["account"], r["fingerprint"]) for r in rows}
+    for row in store.pending_rows():
+        key = (row["source"], row["account"], row["fingerprint"])
+        if key not in seen and frm <= _effective_date(row) <= to:
+            rows.append(row)
+    return rows
 
 
 def _spendable_rows(store, frm, to):
@@ -269,7 +432,7 @@ def _spendable_rows(store, frm, to):
     covered = {_card4(c) for c in store.covered_cards("max", frm, to, grace_days=_COVERAGE_GRACE_DAYS)}
     kept = []
     partial_flag = False
-    for row in store.transactions_between(frm, to):
+    for row in _rows_for_period(store, frm, to):
         m = _CARD_BILL_RE.search(_norm_desc(row["description"]))
         card = _card4(m.group(2)) if m else None
         if card is not None and card in covered:
@@ -282,15 +445,39 @@ def _spendable_rows(store, frm, to):
     return kept, partial_flag
 
 
+def split_savings(rows, rules):
+    """(spend_agorot, saved_agorot) over expense rows — both negative, savings excluded from spend.
+
+    Money moved to a deposit or a gmal is not consumption, and folding it into "you spent X"
+    overstates the figure (the live August total carried ₪7,002.71 of it). It is still money the
+    family can't spend, so it stays subtracted from net — it is just named separately. Savings is
+    the same notion cash_flow_status treats as a committed outflow: a NEGATIVE transfer row.
+
+    Shared by financial_summary and the nudges so the family can never get two different answers
+    to "how much did we spend this month".
+    """
+    spend = saved = 0
+    for r in rows:
+        if r["amount_agorot"] >= 0:
+            continue
+        if _categorize(r["description"], rules) == TRANSFER_CATEGORY:
+            saved += r["amount_agorot"]
+        else:
+            spend += r["amount_agorot"]
+    return spend, saved
+
+
 def _summary_impl(args, *, store, now_fn) -> str:
     frm, to = _resolve_range(args, now_fn)
     rows, partial = _spendable_rows(store, frm, to)
     income = sum(r["amount_agorot"] for r in rows if r["amount_agorot"] > 0)
-    expense = sum(r["amount_agorot"] for r in rows if r["amount_agorot"] < 0)
-    net = income + expense
+    spend, saved = split_savings(rows, store.active_rules())
+    net = income + spend + saved
     bal = store.current_balance_agorot()
-    out = (f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(expense)}\n"
-           f"נטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}")
+    out = f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(spend)}"
+    if saved:
+        out += f"\nחיסכון (הפקדות/גמל): {_shekels(saved)}"
+    out += f"\nנטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}"
     if partial:
         out += "\n" + _PARTIAL_FLAG
     return out

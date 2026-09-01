@@ -1,6 +1,12 @@
 import sqlite3
 from contextlib import closing
 
+# A row is "superseded" once something else accounts for the same money: a pending card bill
+# retired by the settled charge, or a duplicate of the same bill.
+# Append-only house rule — we flip this status, never DELETE — so every read path must exclude it.
+SUPERSEDED = "superseded"
+_ACTIVE = f"status <> '{SUPERSEDED}'"
+
 
 class FinanceStore:
     """Local finance data (SQLite), connection-per-op like shopping_store. Money is integer agorot.
@@ -55,6 +61,24 @@ class FinanceStore:
             conn.commit()
         return inserted, updated
 
+    def pending_rows(self):
+        """Every still-active pending row — the reconciliation candidates. Deciding which of them
+        is a card bill needs the parsing that lives in finance.py, so the store just serves the
+        rows and applies the verdict (see _supersede_settled_bills / _collapse_duplicate_pending_bills)."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            return self._rows(conn, "status='pending'", (), "ORDER BY txn_date")
+
+    def mark_superseded(self, keys):
+        """Retire rows by (source, account, fingerprint). Status flip, never DELETE."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            cur = conn.executemany(
+                f"UPDATE transactions SET status='{SUPERSEDED}'"
+                " WHERE source=? AND account=? AND fingerprint=? AND status<>?",
+                [(k[0], k[1], k[2], SUPERSEDED) for k in keys])
+            n = cur.rowcount
+            conn.commit()
+        return n
+
     def record_snapshot(self, source, account, scraped_at, balance_agorot):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("INSERT INTO account_snapshots (source, account, scraped_at, balance_agorot)"
@@ -74,20 +98,28 @@ class FinanceStore:
         with closing(sqlite3.connect(self.db_path)) as conn:
             income = conn.execute(
                 "SELECT COALESCE(SUM(amount_agorot),0) FROM transactions"
-                " WHERE amount_agorot>0 AND txn_date BETWEEN ? AND ?", (from_date, to_date)).fetchone()[0]
+                f" WHERE {_ACTIVE} AND amount_agorot>0 AND txn_date BETWEEN ? AND ?",
+                (from_date, to_date)).fetchone()[0]
             expense = conn.execute(
                 "SELECT COALESCE(SUM(amount_agorot),0) FROM transactions"
-                " WHERE amount_agorot<0 AND txn_date BETWEEN ? AND ?", (from_date, to_date)).fetchone()[0]
+                f" WHERE {_ACTIVE} AND amount_agorot<0 AND txn_date BETWEEN ? AND ?",
+                (from_date, to_date)).fetchone()[0]
         return income, expense
 
-    def _rows(self, conn, where="", params=()):
-        cols = "source,account,identifier,fingerprint,txn_date,processed_date,amount_agorot,currency,description,status"
-        q = f"SELECT {cols} FROM transactions {where}"
+    def _rows(self, conn, clause="", params=(), tail=""):
+        """Read transactions. ALWAYS filters out superseded rows — a pending line retired by the
+        settled charge that replaced it, or a duplicate of the same bill. They are kept on disk
+        for audit (append-only) but must never reach a spend calculation."""
+        cols = ("source,account,identifier,fingerprint,txn_date,processed_date,amount_agorot,"
+                "currency,description,status,imported_at")
+        where = _ACTIVE + (f" AND {clause}" if clause else "")
+        q = f"SELECT {cols} FROM transactions WHERE {where} {tail}"
         return [dict(zip(cols.split(","), row)) for row in conn.execute(q, params).fetchall()]
 
     def transactions_between(self, from_date, to_date):
         with closing(sqlite3.connect(self.db_path)) as conn:
-            return self._rows(conn, "WHERE txn_date BETWEEN ? AND ? ORDER BY txn_date", (from_date, to_date))
+            return self._rows(conn, "txn_date BETWEEN ? AND ?", (from_date, to_date),
+                              "ORDER BY txn_date")
 
     def search(self, from_date=None, to_date=None, min_abs=None, max_abs=None,
                direction=None, query=None, limit=50):
@@ -104,9 +136,9 @@ class FinanceStore:
             tokens = [t for t in query.split() if len(t) >= 2] or [query]
             clauses.append("(" + " OR ".join(["description LIKE ?"] * len(tokens)) + ")")
             params.extend(f"%{t}%" for t in tokens)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with closing(sqlite3.connect(self.db_path)) as conn:
-            return self._rows(conn, f"{where} ORDER BY txn_date DESC LIMIT ?", (*params, limit))
+            return self._rows(conn, " AND ".join(clauses), (*params, limit),
+                              "ORDER BY txn_date DESC LIMIT ?")
 
     def add_rule(self, merchant_pattern, category):
         with closing(sqlite3.connect(self.db_path)) as conn:
