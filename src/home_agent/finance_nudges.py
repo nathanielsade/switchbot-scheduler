@@ -15,7 +15,7 @@ from what is left — the nudge just names all three parts: spent, saved, and le
 import logging
 
 from .finance import (_CATEGORY_HE, _cash_flow_terms, _categorize, _period_range, _shekels,
-                      _spendable_rows, TRANSFER_CATEGORY)
+                      _spendable_rows, split_savings, TRANSFER_CATEGORY)
 
 log = logging.getLogger("home_agent")
 
@@ -34,18 +34,17 @@ def _split_spend_and_savings(rows, store):
     sort order expects; `saved` is returned positive.
     """
     rules = store.active_rules()
+    spend, saved = split_savings(rows, rules)  # the same split financial_summary reports
     totals = {}
-    saved = 0
     for r in rows:
         if r["amount_agorot"] >= 0:
             continue  # expenses only
         cat = _categorize(r["description"], rules)
         if cat == TRANSFER_CATEGORY:
-            saved += -r["amount_agorot"]
-            continue
-        key = cat or "אחר"
-        totals[key] = totals.get(key, 0) + r["amount_agorot"]
-    return totals, saved
+            continue  # named on its own line, not as a spending category
+        totals[cat or "אחר"] = totals.get(cat or "אחר", 0) + r["amount_agorot"]
+    assert sum(totals.values()) == spend  # the breakdown must add up to the headline figure
+    return totals, -saved
 
 
 def _spent_and_saved_line(prefix, totals, saved):

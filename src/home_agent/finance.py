@@ -445,15 +445,39 @@ def _spendable_rows(store, frm, to):
     return kept, partial_flag
 
 
+def split_savings(rows, rules):
+    """(spend_agorot, saved_agorot) over expense rows — both negative, savings excluded from spend.
+
+    Money moved to a deposit or a gmal is not consumption, and folding it into "you spent X"
+    overstates the figure (the live August total carried ₪7,002.71 of it). It is still money the
+    family can't spend, so it stays subtracted from net — it is just named separately. Savings is
+    the same notion cash_flow_status treats as a committed outflow: a NEGATIVE transfer row.
+
+    Shared by financial_summary and the nudges so the family can never get two different answers
+    to "how much did we spend this month".
+    """
+    spend = saved = 0
+    for r in rows:
+        if r["amount_agorot"] >= 0:
+            continue
+        if _categorize(r["description"], rules) == TRANSFER_CATEGORY:
+            saved += r["amount_agorot"]
+        else:
+            spend += r["amount_agorot"]
+    return spend, saved
+
+
 def _summary_impl(args, *, store, now_fn) -> str:
     frm, to = _resolve_range(args, now_fn)
     rows, partial = _spendable_rows(store, frm, to)
     income = sum(r["amount_agorot"] for r in rows if r["amount_agorot"] > 0)
-    expense = sum(r["amount_agorot"] for r in rows if r["amount_agorot"] < 0)
-    net = income + expense
+    spend, saved = split_savings(rows, store.active_rules())
+    net = income + spend + saved
     bal = store.current_balance_agorot()
-    out = (f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(expense)}\n"
-           f"נטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}")
+    out = f"טווח {frm}…{to}:\nהכנסות: {_shekels(income)}\nהוצאות: {_shekels(spend)}"
+    if saved:
+        out += f"\nחיסכון (הפקדות/גמל): {_shekels(saved)}"
+    out += f"\nנטו: {_shekels(net)}\nיתרה נוכחית: {_shekels(bal)}"
     if partial:
         out += "\n" + _PARTIAL_FLAG
     return out
